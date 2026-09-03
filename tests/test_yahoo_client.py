@@ -23,6 +23,10 @@ class YahooClientTests(unittest.TestCase):
         self.assertIn("HXR-NX70J", url)
         self.assertIn("s1=new", url)
 
+    def test_current_price_has_priority_over_one_yen_title(self):
+        text = "1円〜 ジュエリー 現在 10,451円"
+        self.assertEqual(yahoo_client.parse_price(text), 10451)
+
 
 if __name__ == "__main__":
     unittest.main()
