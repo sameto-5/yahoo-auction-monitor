@@ -1,0 +1,4 @@
+beautifulsoup4>=4.12,<5
+curl-cffi>=0.7,<1
+gspread>=6,<7
+google-auth>=2.30,<3
