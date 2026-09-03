@@ -2,6 +2,7 @@ import json
 import re
 import random
 import time
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode, urljoin, urlparse
 
 from bs4 import BeautifulSoup
@@ -62,8 +63,12 @@ def extract_item_id(url):
 
 def parse_price(text):
     patterns = [
-        r"(?:現在|即決)?\s*(?:価格)?\s*[¥￥]?\s*([0-9][0-9,]*)\s*円",
+        # タイトル内の「1円〜」より「現在 10,451円」を優先する。
+        r"現在(?:価格)?[:：\s]*[¥￥]?\s*([0-9][0-9,]*)\s*円",
+        r"即決(?:価格)?[:：\s]*[¥￥]?\s*([0-9][0-9,]*)\s*円",
+        r"価格[:：\s]*[¥￥]?\s*([0-9][0-9,]*)\s*円",
         r"[¥￥]\s*([0-9][0-9,]*)",
+        r"([0-9][0-9,]*)\s*円",
     ]
     for pattern in patterns:
         match = re.search(pattern, str(text or ""))
