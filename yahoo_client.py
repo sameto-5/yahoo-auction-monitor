@@ -1,5 +1,7 @@
 import json
 import re
+import random
+import time
 from urllib.parse import quote, urljoin, urlparse
 
 from bs4 import BeautifulSoup
@@ -24,13 +26,13 @@ def build_search_url(query, category=""):
     return f"{BASE_URL}/search/search/{quote(str(query).strip(), safe='')}/{category_path}/?s1=new&o1=d"
 
 
-def fetch(url, timeout=20, retries=1):
+def fetch(url, timeout=20, retries=2, backoff_base_seconds=5):
     last_error = None
     for attempt in range(retries + 1):
         try:
             response = requests.get(url, headers=HEADERS, timeout=timeout, impersonate="chrome")
-            if response.status_code == 429:
-                raise RateLimitError("Yahoo!オークションからHTTP 429")
+            if response.status_code in {403, 429}:
+                raise RateLimitError(f"Yahoo!オークションからHTTP {response.status_code}")
             response.raise_for_status()
             return response.text
         except RateLimitError:
@@ -39,6 +41,9 @@ def fetch(url, timeout=20, retries=1):
             last_error = error
             if attempt >= retries:
                 break
+            delay = max(0, backoff_base_seconds) * (2 ** attempt) + random.uniform(0, 1)
+            print(f"YAHOO_HTTP_RETRY: attempt={attempt + 1}/{retries} wait={delay:.1f}s")
+            time.sleep(delay)
     raise RuntimeError(f"取得失敗: {url}: {last_error}")
 
 
@@ -101,8 +106,8 @@ def parse_search_results(html):
     return results
 
 
-def search(query, category="", timeout=20, retries=1):
-    return parse_search_results(fetch(build_search_url(query, category), timeout, retries))
+def search(query, category="", timeout=20, retries=2, backoff_base_seconds=5):
+    return parse_search_results(fetch(build_search_url(query, category), timeout, retries, backoff_base_seconds))
 
 
 def parse_detail_status(html):
