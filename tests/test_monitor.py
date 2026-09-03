@@ -61,6 +61,39 @@ class MonitorTests(unittest.TestCase):
         retries = [group for group in groups if group["key"] in failed_keys]
         self.assertEqual(len(retries), 1)
 
+    def test_one_thousand_queries_select_only_batch_size(self):
+        rows = [make_rule(model=f"MODEL-{number}", keyword="") for number in range(1000)]
+        groups = monitor.build_query_groups(monitor.prepare_rules(rows))
+        selected, _ = monitor.select_query_groups(groups, 30, {})
+        self.assertEqual(len(selected), 30)
+
+    def test_cursor_commits_only_completed_queries_and_wraps(self):
+        rows = [make_rule(model=f"MODEL-{number}", keyword="") for number in range(4)]
+        groups = monitor.build_query_groups(monitor.prepare_rules(rows))
+        selected, _ = monitor.select_query_groups(groups, 3, {"A": 3})
+        committed = monitor.committed_cursors(groups, {"A": 3}, selected[:2])
+        self.assertEqual(committed["A"], 1)
+
+    def test_purchase_candidate_requires_price_at_or_below_limit(self):
+        rule = monitor.prepare_rules([make_rule()])[0]
+        low = AuctionItem("1", "HXR-NX70J", 19000, "https://example.test/1")
+        low.status_class = "unknown"
+        high = AuctionItem("2", "HXR-NX70J", 21000, "https://example.test/2")
+        high.status_class = "unknown"
+        self.assertTrue(monitor.is_purchase_candidate(low, rule))
+        self.assertFalse(monitor.is_purchase_candidate(high, rule))
+
+    def test_notified_item_is_not_queued_again(self):
+        rule = monitor.prepare_rules([make_rule()])[0]
+        item = AuctionItem("already", "HXR-NX70J", 19000, "https://example.test/already")
+        item.status_class = "unknown"
+        self.assertFalse(monitor.should_notify_item(item, rule, {"already": (2, {})}))
+
+    def test_cursor_does_not_move_when_nothing_completed(self):
+        rows = [make_rule(model=f"MODEL-{number}", keyword="") for number in range(3)]
+        groups = monitor.build_query_groups(monitor.prepare_rules(rows))
+        self.assertEqual(monitor.committed_cursors(groups, {"A": 2}, []), {"A": 2})
+
 
 if __name__ == "__main__":
     unittest.main()
