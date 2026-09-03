@@ -2,7 +2,7 @@ import json
 import re
 import random
 import time
-from urllib.parse import quote, urljoin, urlparse
+from urllib.parse import urlencode, urljoin, urlparse
 
 from bs4 import BeautifulSoup
 from curl_cffi import requests
@@ -23,7 +23,14 @@ class RateLimitError(RuntimeError):
 
 def build_search_url(query, category=""):
     category_path = str(category or "0").strip() or "0"
-    return f"{BASE_URL}/search/search/{quote(str(query).strip(), safe='')}/{category_path}/?s1=new&o1=d"
+    params = {
+        "p": str(query).strip(),
+        "s1": "new",
+        "o1": "d",
+    }
+    if category_path != "0":
+        params["auccat"] = category_path
+    return f"{BASE_URL}/search/search?{urlencode(params)}"
 
 
 def fetch(url, timeout=20, retries=2, backoff_base_seconds=5):
