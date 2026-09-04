@@ -153,6 +153,11 @@ def update_records(worksheet, updates):
     _write(f"{_key(worksheet)}.batch_update", lambda: worksheet.batch_update(payload))
 
 
+def delete_rows(worksheet, row_numbers):
+    for row_number in sorted(set(row_numbers), reverse=True):
+        _write(f"{_key(worksheet)}.delete_row", lambda n=row_number: worksheet.delete_rows(n))
+
+
 def records_by(worksheet, key):
     rows = cached_records(worksheet)
     return rows, {

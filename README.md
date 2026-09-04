@@ -1,4 +1,3 @@
-[README.md](https://github.com/user-attachments/files/31803057/README.md)
 # ヤフオク監視
 
 オフモール監視とは独立した監視プロジェクトです。同じGoogleスプレッドシートの
@@ -68,6 +67,8 @@ YAHOO_SEARCH_DELAY_MIN_SECONDS=5
 YAHOO_SEARCH_DELAY_MAX_SECONDS=8
 YAHOO_HTTP_MAX_RETRIES=2
 YAHOO_HTTP_BACKOFF_BASE_SECONDS=5
+YAHOO_ENDING_CHECK_MINUTES=30
+YAHOO_ENDING_CHECKS_PER_RUN=10
 SHEETS_MAX_RETRIES=3
 SHEETS_BACKOFF_BASE_SECONDS=3
 ```
@@ -80,6 +81,10 @@ SHEETS_BACKOFF_BASE_SECONDS=3
 - `yahoo_notified_items`
 - `yahoo_monitor_state`
 - `yahoo_priority_candidates`
+- `yahoo_auction_watch`
+
+競り形式は新着通知せず`yahoo_auction_watch`へ保存し、終了30分以内かつ
+詳細未確認の商品だけを1回再取得します。確認済み商品は定期再取得しません。
 
 `priority_items`へは書き込みません。自動候補は`yahoo_priority_candidates`へ保存し、人が確認して
 必要なものだけ共通マスターへ登録します。

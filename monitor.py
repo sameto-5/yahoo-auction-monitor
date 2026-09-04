@@ -7,9 +7,11 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from condition import LABELS, classify_item_condition, prices_for_condition
+from auction_watch import discovery_action, due_for_check, ending_result, minutes_to_end, should_cleanup
 from notifications import send_discord, send_line_notifications
 from sheets import (
     append_records,
+    delete_rows,
     get_or_create_sheet,
     get_priority_rows_read_only,
     load_state,
@@ -36,6 +38,8 @@ HTTP_BACKOFF_BASE_SECONDS = float(os.getenv("YAHOO_HTTP_BACKOFF_BASE_SECONDS", "
 SHEETS_MAX_RETRIES = int(os.getenv("SHEETS_MAX_RETRIES", "3"))
 SHEETS_BACKOFF_BASE_SECONDS = float(os.getenv("SHEETS_BACKOFF_BASE_SECONDS", "3"))
 FAST_SOLD_MINUTES = int(os.getenv("FAST_SOLD_MINUTES", "10"))
+YAHOO_ENDING_CHECK_MINUTES = int(os.getenv("YAHOO_ENDING_CHECK_MINUTES", "30"))
+YAHOO_ENDING_CHECKS_PER_RUN = int(os.getenv("YAHOO_ENDING_CHECKS_PER_RUN", "10"))
 DRY_RUN = os.getenv("DRY_RUN", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 GOOGLE_CREDENTIALS = os.getenv("GOOGLE_CREDENTIALS")
@@ -63,6 +67,11 @@ SOLD_HEADERS = [
 ]
 CANDIDATE_HEADERS = [
     "型番キー", "初回候補日時", "最終候補日時", "即売れ件数", "直近価格", "status_class", "根拠",
+]
+WATCH_HEADERS = [
+    "商品ID", "商品名", "商品URL", "priority_rule_id", "優先度", "型番キー", "仕入上限",
+    "発見時現在価格", "送料", "即決価格", "終了日時", "最終確認日時", "詳細確認済み",
+    "ending_notified", "詳細取得失敗回数", "状態", "備考",
 ]
 
 
@@ -282,6 +291,7 @@ def main():
     notified_ws = get_or_create_sheet(book, "yahoo_notified_items", NOTIFIED_HEADERS)
     sold_ws = get_or_create_sheet(book, "yahoo_sold_fast_items", SOLD_HEADERS)
     candidates_ws = get_or_create_sheet(book, "yahoo_priority_candidates", CANDIDATE_HEADERS)
+    watch_ws = get_or_create_sheet(book, "yahoo_auction_watch", WATCH_HEADERS)
     state, state_rows = load_state(state_ws)
 
     try:
@@ -301,6 +311,7 @@ def main():
     selected = (retry_groups + [group for group in selected if group["key"] not in retry_keys])[:YAHOO_BATCH_SIZE]
     item_rows, known_items = records_by(items_ws, "商品ID")
     _, notified_items = records_by(notified_ws, "商品ID")
+    watch_rows, watched_items = records_by(watch_ws, "商品ID")
     found = {}
     failed_queries = []
     rate_limited = False
@@ -334,6 +345,7 @@ def main():
     item_updates = []
     history_records = []
     notification_jobs = []
+    watch_records = []
     for item in found.values():
         try:
             status_class, status_reason = classify_item_condition(item.title, item.description, item.store_condition)
@@ -361,15 +373,32 @@ def main():
                 "型番キー": model_key, "優先度": rule.get("優先度", "") if rule else "",
                 "status_class": item.status_class, "status_reason": item.status_reason,
             })
-            if should_notify_item(item, rule, notified_items):
-                notification_jobs.append((item, rule))
+            if rule:
+                limit = prices_for_condition(rule, item.status_class)["limit"]
+                action = discovery_action(item, limit)
+                if action == "immediate" and str(item.item_id) not in notified_items:
+                    if item.buy_now_price is not None:
+                        item.price = item.buy_now_price
+                    notification_jobs.append((item, rule))
+                elif action == "watch" and str(item.item_id) not in watched_items:
+                    watch_records.append({
+                        "商品ID": item.item_id, "商品名": item.title, "商品URL": item.url,
+                        "priority_rule_id": rule["_rule_id"], "優先度": rule.get("優先度", ""),
+                        "型番キー": model_key, "仕入上限": limit or "", "発見時現在価格": item.price or "",
+                        "送料": item.shipping_fee if item.shipping_fee is not None else "",
+                        "即決価格": item.buy_now_price or "", "終了日時": item.end_at,
+                        "最終確認日時": discovered_at, "詳細確認済み": "0", "ending_notified": "0",
+                        "詳細取得失敗回数": "0", "状態": "watching", "備考": item.listing_type,
+                    })
         except Exception as error:
             print(f"ITEM_ERROR: {item.item_id}: {error}")
 
     # Google Sheets APIの呼び出し回数を抑えるため、商品単位ではなくシート単位で一括保存する。
-    update_records(items_ws, item_updates)
-    append_records(items_ws, new_item_records)
-    append_records(history_ws, history_records)
+    if not DRY_RUN:
+        update_records(items_ws, item_updates)
+        append_records(items_ws, new_item_records)
+        append_records(history_ws, history_records)
+        append_records(watch_ws, watch_records)
 
     notified_records = []
     for item, rule in notification_jobs:
@@ -392,13 +421,71 @@ def main():
                         message,
                         DRY_RUN,
                     )
-            notified_records.append({
+            if not DRY_RUN:
+                notified_records.append({
                 "商品ID": item.item_id, "商品URL": item.url, "通知日時": discovered_at,
                 "通知種別": "PRIORITY" if rule else "NORMAL", "商品名": item.title, "価格": item.price or "",
-            })
+                })
         except Exception as error:
             print(f"NOTIFICATION_ERROR: {item.item_id}: {error}")
-    append_records(notified_ws, notified_records)
+    if not DRY_RUN:
+        append_records(notified_ws, notified_records)
+
+    # 終了30分以内に初めて入った未確認watchだけを1回詳細取得する。
+    rule_map = {rule["_rule_id"]: rule for rule in rules}
+    current_dt = datetime.now(JST)
+    due_watches = [
+        (index, row) for index, row in enumerate(watch_rows, start=2)
+        if due_for_check(row, current_dt, YAHOO_ENDING_CHECK_MINUTES)
+    ][:YAHOO_ENDING_CHECKS_PER_RUN]
+    watch_updates = []
+    watch_deletes = [
+        index for index, row in enumerate(watch_rows, start=2)
+        if (minutes_to_end(row.get("終了日時"), current_dt) is not None
+            and minutes_to_end(row.get("終了日時"), current_dt) < 0)
+    ]
+    for row_number, row in due_watches:
+        updated = dict(row)
+        try:
+            detail = yahoo_client.get_detail(row.get("商品URL"), HTTP_TIMEOUT_SECONDS, 0, HTTP_BACKOFF_BASE_SECONDS)
+            updated["最終確認日時"] = now_jst()
+            updated["詳細確認済み"] = "1"
+            updated["状態"] = detail.get("status", "unknown")
+            if should_cleanup(updated["状態"]):
+                watch_deletes.append(row_number)
+            else:
+                price = detail.get("current_price")
+                shipping = detail.get("shipping_fee")
+                if shipping is None:
+                    shipping = int(row.get("送料")) if str(row.get("送料") or "").isdigit() else None
+                result = ending_result(price, shipping, int(row.get("仕入上限") or 0))
+                if result["notify"]:
+                    remaining = minutes_to_end(row.get("終了日時"), current_dt)
+                    message = (
+                        f"{result['level']}\n\n商品：{row.get('商品名')}\n"
+                        f"現在価格：{format_money(price)}\n送料：{format_money(shipping)}\n"
+                        f"送料込：{format_money(result['total'])}\n仕入上限：{format_money(int(row.get('仕入上限') or 0))}\n"
+                        f"上限比：{result['ratio']:.1f}%\n終了まで：{remaining}分\n\n{row.get('商品URL')}"
+                    )
+                    rule = rule_map.get(str(row.get("priority_rule_id")))
+                    if not DRY_RUN:
+                        if rule and channel_enabled(rule.get("Discord通知"), True):
+                            send_discord(DISCORD_PRIORITY_WEBHOOK_URL, message, False)
+                        if rule and channel_enabled(rule.get("LINE通知"), False):
+                            send_line_notifications(LINE_CHANNEL_ACCESS_TOKEN, LINE_USER_ID, LINE_GROUP_ID, LINE_NOTIFY_MODE, message, False)
+                        updated["ending_notified"] = "1"
+                    else:
+                        print("[DRY_RUN][ENDING]\n" + message)
+        except Exception as error:
+            updated["詳細取得失敗回数"] = str(int(row.get("詳細取得失敗回数") or 0) + 1)
+            updated["備考"] = f"詳細取得失敗: {type(error).__name__}"
+            if should_cleanup("unknown", updated["詳細取得失敗回数"]):
+                watch_deletes.append(row_number)
+        if not DRY_RUN:
+            watch_updates.append((row_number, updated))
+    update_records(watch_ws, watch_updates)
+    if not DRY_RUN:
+        delete_rows(watch_ws, watch_deletes)
 
     active = [(row_number, row) for row_number, row in known_items.values() if row.get("出品状態") == "active"]
     status_cursor = int(state.get("status_cursor", "0") or 0)
@@ -466,21 +553,25 @@ def main():
             })
             candidate_keys[key] = (0, candidate_records[-1])
 
-    update_records(items_ws, status_item_updates)
-    append_records(history_ws, status_history_records)
-    append_records(sold_ws, sold_records)
-    append_records(candidates_ws, candidate_records)
+    if not DRY_RUN:
+        update_records(items_ws, status_item_updates)
+        append_records(history_ws, status_history_records)
+        append_records(sold_ws, sold_records)
+        append_records(candidates_ws, candidate_records)
     cursor_completed = [group for group in completed_groups if id(group) in cursor_selection_ids]
     final_cursors = committed_cursors(groups, original_cursors, cursor_completed)
-    save_states(state_ws, state_rows, {
-        "failed_queries": json.dumps(failed_queries, ensure_ascii=False),
-        "status_cursor": str(next_status_cursor),
-        "last_completed_at": now_jst(),
-    })
-    # 履歴・商品・補助状態の保存がすべて成功した後、最後に検索カーソルをcommitする。
-    save_states(state_ws, state_rows, {
-        "search_cursors": json.dumps(final_cursors, ensure_ascii=False),
-    })
+    if not DRY_RUN:
+        save_states(state_ws, state_rows, {
+            "failed_queries": json.dumps(failed_queries, ensure_ascii=False),
+            "status_cursor": str(next_status_cursor),
+            "last_completed_at": now_jst(),
+        })
+        # 履歴・商品・補助状態の保存がすべて成功した後、最後に検索カーソルをcommitする。
+        save_states(state_ws, state_rows, {
+            "search_cursors": json.dumps(final_cursors, ensure_ascii=False),
+        })
+    else:
+        final_cursors = original_cursors
 
     print(
         f"完了: 有効ルール={len(rules)} 検索語={len(groups)} 今回検索={len(selected)} "

@@ -14,6 +14,10 @@ class AuctionItem:
     status_class: str = "unknown"
     status_reason: str = "状態を判断できる表現なし"
     matched_rule_ids: list[str] = field(default_factory=list)
+    listing_type: str = "unknown"
+    buy_now_price: int | None = None
+    shipping_fee: int | None = None
+    end_at: str = ""
 
     def as_dict(self):
         return dict(self.__dict__)
