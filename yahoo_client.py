@@ -19,7 +19,10 @@ HEADERS = {
 
 
 class RateLimitError(RuntimeError):
-    pass
+    def __init__(self, status_code, url=""):
+        self.status_code = int(status_code)
+        self.url = str(url or "")
+        super().__init__(f"Yahoo!オークションからHTTP {self.status_code}")
 
 
 def build_search_url(query, category=""):
@@ -34,18 +37,29 @@ def build_search_url(query, category=""):
     return f"{BASE_URL}/search/search?{urlencode(params)}"
 
 
-def fetch(url, timeout=20, retries=2, backoff_base_seconds=5):
+def fetch(url, timeout=20, retries=2, backoff_base_seconds=5, request_observer=None):
     last_error = None
     for attempt in range(retries + 1):
         try:
+            if request_observer:
+                request_observer("REQUEST", None)
             response = requests.get(url, headers=HEADERS, timeout=timeout, impersonate="chrome")
             if response.status_code in {403, 429}:
-                raise RateLimitError(f"Yahoo!オークションからHTTP {response.status_code}")
+                if request_observer:
+                    request_observer("HTTP_ERROR", response.status_code)
+                raise RateLimitError(response.status_code, url)
+            if response.status_code >= 500 and request_observer:
+                request_observer("HTTP_ERROR", response.status_code)
             response.raise_for_status()
             return response.text
         except RateLimitError:
             raise
         except Exception as error:
+            if request_observer and (
+                "timeout" in type(error).__name__.lower()
+                or "timed out" in str(error).lower()
+            ):
+                request_observer("TIMEOUT", None)
             last_error = error
             if attempt >= retries:
                 break
@@ -157,8 +171,11 @@ def parse_search_results(html):
     return results
 
 
-def search(query, category="", timeout=20, retries=2, backoff_base_seconds=5):
-    return parse_search_results(fetch(build_search_url(query, category), timeout, retries, backoff_base_seconds))
+def search(query, category="", timeout=20, retries=2, backoff_base_seconds=5, request_observer=None):
+    return parse_search_results(fetch(
+        build_search_url(query, category), timeout, retries,
+        backoff_base_seconds, request_observer,
+    ))
 
 
 def parse_detail_status(html):
@@ -193,12 +210,14 @@ def parse_detail_status(html):
     return "unknown", "状態表記を取得できず"
 
 
-def check_status(url, timeout=20, retries=0):
-    return parse_detail_status(fetch(url, timeout, retries))
+def check_status(url, timeout=20, retries=0, request_observer=None):
+    return parse_detail_status(fetch(
+        url, timeout, retries, request_observer=request_observer
+    ))
 
 
-def get_detail(url, timeout=20, retries=0, backoff_base_seconds=5):
-    html = fetch(url, timeout, retries, backoff_base_seconds)
+def get_detail(url, timeout=20, retries=0, backoff_base_seconds=5, request_observer=None):
+    html = fetch(url, timeout, retries, backoff_base_seconds, request_observer)
     soup = BeautifulSoup(html, "html.parser")
     text = soup.get_text(" ", strip=True)
     info = parse_listing_info(text)

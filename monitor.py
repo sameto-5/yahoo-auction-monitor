@@ -265,15 +265,125 @@ def parse_datetime(value):
     return datetime.strptime(str(value), "%Y-%m-%d %H:%M:%S").replace(tzinfo=JST)
 
 
-def wait_between_requests():
+def new_run_metrics():
+    return {
+        "yahoo_search_request_count": 0,
+        "yahoo_watch_detail_request_count": 0,
+        "yahoo_status_detail_request_count": 0,
+        "yahoo_total_request_count": 0,
+        "yahoo_http_403_count": 0,
+        "yahoo_http_429_count": 0,
+        "yahoo_http_5xx_count": 0,
+        "yahoo_timeout_count": 0,
+        "yahoo_rate_limit_stop": False,
+        "yahoo_rate_limit_stage": "NONE",
+        "yahoo_request_wait_ms_total": 0,
+        "yahoo_watch_wait_ms_total": 0,
+        "yahoo_watch_existing_seen_count": 0,
+        "yahoo_watch_updated_count": 0,
+        "yahoo_watch_price_updated_count": 0,
+        "yahoo_watch_shipping_updated_count": 0,
+        "yahoo_watch_end_time_updated_count": 0,
+        "yahoo_watch_end_time_recovered_count": 0,
+        "yahoo_notification_attempt_count": 0,
+        "yahoo_notification_success_count": 0,
+        "yahoo_notification_failed_count": 0,
+        "discord_attempt_count": 0,
+        "discord_success_count": 0,
+        "discord_failed_count": 0,
+        "line_attempt_count": 0,
+        "line_success_count": 0,
+        "line_failed_count": 0,
+    }
+
+
+def request_observer(metrics, stage):
+    key = {
+        "SEARCH": "yahoo_search_request_count",
+        "WATCH": "yahoo_watch_detail_request_count",
+        "STATUS": "yahoo_status_detail_request_count",
+    }[stage]
+
+    def observe(event, status_code):
+        if event == "REQUEST":
+            metrics[key] += 1
+            metrics["yahoo_total_request_count"] += 1
+        elif event == "HTTP_ERROR":
+            if status_code == 403:
+                metrics["yahoo_http_403_count"] += 1
+            elif status_code == 429:
+                metrics["yahoo_http_429_count"] += 1
+            elif status_code is not None and status_code >= 500:
+                metrics["yahoo_http_5xx_count"] += 1
+        elif event == "TIMEOUT":
+            metrics["yahoo_timeout_count"] += 1
+    return observe
+
+
+def mark_rate_limit(metrics, stage, error):
+    metrics["yahoo_rate_limit_stop"] = True
+    metrics["yahoo_rate_limit_stage"] = stage
+    status_code = getattr(error, "status_code", "UNKNOWN")
+    print(f"YAHOO_RATE_LIMIT_STOP: stage={stage} status_code={status_code}")
+
+
+def wait_between_requests(metrics=None, stage="OTHER"):
     low = min(SEARCH_DELAY_MIN_SECONDS, SEARCH_DELAY_MAX_SECONDS)
     high = max(SEARCH_DELAY_MIN_SECONDS, SEARCH_DELAY_MAX_SECONDS)
     if high > 0:
-        time.sleep(random.uniform(low, high))
+        delay = random.uniform(low, high)
+        time.sleep(delay)
+        if metrics is not None:
+            waited_ms = round(delay * 1000)
+            metrics["yahoo_request_wait_ms_total"] += waited_ms
+            if stage == "WATCH":
+                metrics["yahoo_watch_wait_ms_total"] += waited_ms
+
+
+def merge_existing_watch(row, item, checked_at):
+    """Merge trustworthy search-card values without resetting watch state flags."""
+    updated = dict(row)
+    changes = set()
+    values = {
+        "商品名": item.title,
+        "発見時現在価格": item.price,
+        "送料": item.shipping_fee,
+        "即決価格": item.buy_now_price,
+        "終了日時": item.end_at,
+    }
+    old_end = str(row.get("終了日時") or "")
+    for field, value in values.items():
+        if value is None or value == "":
+            continue
+        if str(updated.get(field, "")) != str(value):
+            updated[field] = value
+            changes.add(field)
+    if changes:
+        updated["最終確認日時"] = checked_at
+    return updated, {
+        "updated": bool(changes),
+        "price": "発見時現在価格" in changes,
+        "shipping": "送料" in changes,
+        "end_time": "終了日時" in changes,
+        "end_time_recovered": not old_end and "終了日時" in changes,
+    }
+
+
+def record_channel_result(metrics, channel, success):
+    metrics["yahoo_notification_attempt_count"] += 1
+    metrics[f"{channel}_attempt_count"] += 1
+    if success:
+        metrics["yahoo_notification_success_count"] += 1
+        metrics[f"{channel}_success_count"] += 1
+    else:
+        metrics["yahoo_notification_failed_count"] += 1
+        metrics[f"{channel}_failed_count"] += 1
+    return bool(success)
 
 
 def main():
     started = datetime.now(JST)
+    metrics = new_run_metrics()
     print(f"RUN_START: {started.strftime('%Y-%m-%d %H:%M:%S')}")
     if not (YAHOO_ACTIVE_START_HOUR <= started.hour < YAHOO_ACTIVE_END_HOUR):
         print("SCHEDULE_SKIP: Yahoo active hours outside sheets_read=0 sheets_write=0")
@@ -314,25 +424,26 @@ def main():
     watch_rows, watched_items = records_by(watch_ws, "商品ID")
     found = {}
     failed_queries = []
-    rate_limited = False
+    yahoo_access_blocked = False
     completed_groups = []
     http_errors = 0
     for index, group in enumerate(selected):
         if index:
-            wait_between_requests()
+            wait_between_requests(metrics, "SEARCH")
         try:
             results = yahoo_client.search(
                 group["query"], timeout=HTTP_TIMEOUT_SECONDS, retries=HTTP_RETRIES,
                 backoff_base_seconds=HTTP_BACKOFF_BASE_SECONDS,
+                request_observer=request_observer(metrics, "SEARCH"),
             )
             print(f"SEARCH_OK: {group['query']} {len(results)}件")
             for item in results:
                 found.setdefault(item.item_id, item)
             completed_groups.append(group)
         except yahoo_client.RateLimitError as error:
-            print(f"SEARCH_429_STOP: {error}")
+            mark_rate_limit(metrics, "SEARCH", error)
             failed_queries.extend(item["query"] for item in selected[index:])
-            rate_limited = True
+            yahoo_access_blocked = True
             http_errors += 1
             break
         except Exception as error:
@@ -346,6 +457,7 @@ def main():
     history_records = []
     notification_jobs = []
     watch_records = []
+    search_watch_updates = []
     for item in found.values():
         try:
             status_class, status_reason = classify_item_condition(item.title, item.description, item.store_condition)
@@ -354,6 +466,7 @@ def main():
             rule = best_rule(item, rules)
             model_key = normalize_match_text((rule or {}).get("型番") or (rule or {}).get("キーワード"))
             existing = known_items.get(item.item_id)
+            existing_watch = watched_items.get(str(item.item_id))
             record = {
                 "商品ID": item.item_id, "商品URL": item.url, "商品名": item.title,
                 "初回検知日時": existing[1].get("初回検知日時") if existing else discovered_at,
@@ -365,6 +478,32 @@ def main():
             }
             if existing:
                 item_updates.append((existing[0], record))
+                if existing_watch:
+                    metrics["yahoo_watch_existing_seen_count"] += 1
+                    merged, watch_change = merge_existing_watch(
+                        existing_watch[1], item, discovered_at
+                    )
+                    if watch_change["updated"]:
+                        search_watch_updates.append((existing_watch[0], merged))
+                        # Later due-watch selection in this same run must see recovered
+                        # end time and refreshed price without another Sheets read.
+                        watch_rows[existing_watch[0] - 2] = merged
+                        watched_items[str(item.item_id)] = (existing_watch[0], merged)
+                        metrics["yahoo_watch_updated_count"] += 1
+                        metrics["yahoo_watch_price_updated_count"] += int(watch_change["price"])
+                        metrics["yahoo_watch_shipping_updated_count"] += int(watch_change["shipping"])
+                        metrics["yahoo_watch_end_time_updated_count"] += int(watch_change["end_time"])
+                        metrics["yahoo_watch_end_time_recovered_count"] += int(
+                            watch_change["end_time_recovered"]
+                        )
+                if rule and str(item.item_id) not in notified_items:
+                    action = discovery_action(
+                        item, prices_for_condition(rule, item.status_class)["limit"]
+                    )
+                    if action == "immediate":
+                        if item.buy_now_price is not None:
+                            item.price = item.buy_now_price
+                        notification_jobs.append((item, rule))
                 continue
             new_item_records.append(record)
             history_records.append({
@@ -403,7 +542,12 @@ def main():
     notified_records = []
     for item, rule in notification_jobs:
         try:
-            send_discord(DISCORD_WEBHOOK_URL, build_normal_message(item), DRY_RUN)
+            deliveries = []
+            if DISCORD_WEBHOOK_URL or DRY_RUN:
+                deliveries.append(record_channel_result(
+                    metrics, "discord",
+                    send_discord(DISCORD_WEBHOOK_URL, build_normal_message(item), DRY_RUN),
+                ))
             if rule:
                 message = build_priority_message(item, rule)
                 print(f"[CONDITION] id={item.item_id} status={item.status_class} reason={item.status_reason}")
@@ -411,9 +555,12 @@ def main():
                 difference = values["limit"] - item.price if values["limit"] is not None and item.price is not None else None
                 print(f"[PRICE] price={item.price} market={values['market']} buy_limit={values['limit']} difference={difference}")
                 if channel_enabled(rule.get("Discord通知"), True):
-                    send_discord(DISCORD_PRIORITY_WEBHOOK_URL, message, DRY_RUN)
+                    deliveries.append(record_channel_result(
+                        metrics, "discord",
+                        send_discord(DISCORD_PRIORITY_WEBHOOK_URL, message, DRY_RUN),
+                    ))
                 if channel_enabled(rule.get("LINE通知"), False):
-                    send_line_notifications(
+                    line_results = send_line_notifications(
                         LINE_CHANNEL_ACCESS_TOKEN,
                         LINE_USER_ID,
                         LINE_GROUP_ID,
@@ -421,11 +568,18 @@ def main():
                         message,
                         DRY_RUN,
                     )
-            if not DRY_RUN:
+                    deliveries.extend(
+                        record_channel_result(metrics, "line", success)
+                        for success in line_results.values()
+                    )
+            delivery_success = bool(deliveries) and all(deliveries)
+            if not DRY_RUN and delivery_success:
                 notified_records.append({
                 "商品ID": item.item_id, "商品URL": item.url, "通知日時": discovered_at,
                 "通知種別": "PRIORITY" if rule else "NORMAL", "商品名": item.title, "価格": item.price or "",
                 })
+            elif not delivery_success:
+                print(f"NOTIFICATION_DELIVERY_FAILED: {item.item_id} retry_on_rediscovery=1")
         except Exception as error:
             print(f"NOTIFICATION_ERROR: {item.item_id}: {error}")
     if not DRY_RUN:
@@ -444,10 +598,18 @@ def main():
         if (minutes_to_end(row.get("終了日時"), current_dt) is not None
             and minutes_to_end(row.get("終了日時"), current_dt) < 0)
     ]
-    for row_number, row in due_watches:
+    for watch_index, (row_number, row) in enumerate(due_watches):
+        if yahoo_access_blocked:
+            break
+        if watch_index:
+            wait_between_requests(metrics, "WATCH")
         updated = dict(row)
         try:
-            detail = yahoo_client.get_detail(row.get("商品URL"), HTTP_TIMEOUT_SECONDS, 0, HTTP_BACKOFF_BASE_SECONDS)
+            detail = yahoo_client.get_detail(
+                row.get("商品URL"), HTTP_TIMEOUT_SECONDS, 0,
+                HTTP_BACKOFF_BASE_SECONDS,
+                request_observer=request_observer(metrics, "WATCH"),
+            )
             updated["最終確認日時"] = now_jst()
             updated["詳細確認済み"] = "1"
             updated["状態"] = detail.get("status", "unknown")
@@ -469,13 +631,38 @@ def main():
                     )
                     rule = rule_map.get(str(row.get("priority_rule_id")))
                     if not DRY_RUN:
+                        deliveries = []
                         if rule and channel_enabled(rule.get("Discord通知"), True):
-                            send_discord(DISCORD_PRIORITY_WEBHOOK_URL, message, False)
+                            deliveries.append(record_channel_result(
+                                metrics, "discord",
+                                send_discord(DISCORD_PRIORITY_WEBHOOK_URL, message, False),
+                            ))
                         if rule and channel_enabled(rule.get("LINE通知"), False):
-                            send_line_notifications(LINE_CHANNEL_ACCESS_TOKEN, LINE_USER_ID, LINE_GROUP_ID, LINE_NOTIFY_MODE, message, False)
-                        updated["ending_notified"] = "1"
+                            line_results = send_line_notifications(
+                                LINE_CHANNEL_ACCESS_TOKEN, LINE_USER_ID, LINE_GROUP_ID,
+                                LINE_NOTIFY_MODE, message, False,
+                            )
+                            deliveries.extend(
+                                record_channel_result(metrics, "line", success)
+                                for success in line_results.values()
+                            )
+                        if deliveries and all(deliveries):
+                            updated["ending_notified"] = "1"
+                        else:
+                            # No persistent retry queue exists in PHASE 8A. Keep the
+                            # bounded watch eligible so a later run can retry safely.
+                            updated["詳細確認済み"] = "0"
+                            print(
+                                f"ENDING_NOTIFICATION_FAILED: {row.get('商品ID')} "
+                                "ending_notified=0 retry_eligible=1"
+                            )
                     else:
                         print("[DRY_RUN][ENDING]\n" + message)
+        except yahoo_client.RateLimitError as error:
+            mark_rate_limit(metrics, "WATCH", error)
+            yahoo_access_blocked = True
+            updated["詳細取得失敗回数"] = str(int(row.get("詳細取得失敗回数") or 0) + 1)
+            updated["備考"] = f"詳細取得停止: HTTP {error.status_code}"
         except Exception as error:
             updated["詳細取得失敗回数"] = str(int(row.get("詳細取得失敗回数") or 0) + 1)
             updated["備考"] = f"詳細取得失敗: {type(error).__name__}"
@@ -483,7 +670,13 @@ def main():
                 watch_deletes.append(row_number)
         if not DRY_RUN:
             watch_updates.append((row_number, updated))
-    update_records(watch_ws, watch_updates)
+    combined_watch_updates = {
+        row_number: record for row_number, record in search_watch_updates
+    }
+    combined_watch_updates.update({
+        row_number: record for row_number, record in watch_updates
+    })
+    update_records(watch_ws, list(combined_watch_updates.items()))
     if not DRY_RUN:
         delete_rows(watch_ws, watch_deletes)
 
@@ -496,20 +689,29 @@ def main():
     status_history_records = []
     sold_records = []
     candidate_records = []
+    status_completed_prefix = 0
+    status_cursor_frozen = False
     for index, (row_number, row) in enumerate(checks):
-        if rate_limited:
+        if yahoo_access_blocked:
             break
         if index or selected:
-            wait_between_requests()
+            wait_between_requests(metrics, "STATUS")
         try:
-            status, reason = yahoo_client.check_status(row.get("商品URL"), HTTP_TIMEOUT_SECONDS, 0)
-        except yahoo_client.RateLimitError:
-            print("STATUS_429_STOP")
+            status, reason = yahoo_client.check_status(
+                row.get("商品URL"), HTTP_TIMEOUT_SECONDS, 0,
+                request_observer=request_observer(metrics, "STATUS"),
+            )
+            if not status_cursor_frozen:
+                status_completed_prefix += 1
+        except yahoo_client.RateLimitError as error:
+            mark_rate_limit(metrics, "STATUS", error)
+            yahoo_access_blocked = True
             http_errors += 1
             break
         except Exception as error:
             print(f"STATUS_ERROR: {row.get('商品ID')}: {error}")
             http_errors += 1
+            status_cursor_frozen = True
             continue
         if status not in {"sold", "ended"}:
             continue
@@ -539,11 +741,13 @@ def main():
             "status_class": row.get("status_class"), "status_reason": row.get("status_reason"),
         }
         sold_records.append(sold_record)
-        send_discord(DISCORD_SOLD_WEBHOOK_URL, (
-            f"🔥 ヤフオク {FAST_SOLD_MINUTES}分以内SOLD\n{row.get('商品名')}\n"
-            f"価格：{format_money(int(row['最新価格'])) if str(row.get('最新価格', '')).isdigit() else row.get('最新価格')}\n"
-            f"初回検知から{minutes}分\n{row.get('商品URL')}"
-        ), DRY_RUN)
+        record_channel_result(metrics, "discord", send_discord(
+            DISCORD_SOLD_WEBHOOK_URL, (
+                f"🔥 ヤフオク {FAST_SOLD_MINUTES}分以内SOLD\n{row.get('商品名')}\n"
+                f"価格：{format_money(int(row['最新価格'])) if str(row.get('最新価格', '')).isdigit() else row.get('最新価格')}\n"
+                f"初回検知から{minutes}分\n{row.get('商品URL')}"
+            ), DRY_RUN
+        ))
         key = str(row.get("型番キー") or "")
         if key and key not in candidate_keys:
             candidate_records.append({
@@ -553,6 +757,11 @@ def main():
             })
             candidate_keys[key] = (0, candidate_records[-1])
 
+    if active:
+        next_status_cursor = (
+            int(state.get("status_cursor", "0") or 0) % len(active)
+            + status_completed_prefix
+        ) % len(active)
     if not DRY_RUN:
         update_records(items_ws, status_item_updates)
         append_records(history_ws, status_history_records)
@@ -577,6 +786,10 @@ def main():
         f"完了: 有効ルール={len(rules)} 検索語={len(groups)} 今回検索={len(selected)} "
         f"取得商品={len(found)} 失敗検索={len(failed_queries)}"
     )
+    metrics["run_total_seconds"] = round(
+        (datetime.now(JST) - started).total_seconds(), 3
+    )
+    print("YAHOO_PHASE8A_METRIC: " + json.dumps(metrics, ensure_ascii=False, sort_keys=True))
     print(
         f"CURSOR_COMMIT: start={json.dumps(original_cursors, ensure_ascii=False)} "
         f"end={json.dumps(final_cursors, ensure_ascii=False)} completed={len(completed_groups)}"
