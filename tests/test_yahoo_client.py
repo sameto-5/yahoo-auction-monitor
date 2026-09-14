@@ -23,6 +23,11 @@ class YahooClientTests(unittest.TestCase):
         self.assertIn("HXR-NX70J", url)
         self.assertIn("s1=new", url)
 
+    def test_search_url_replaces_slash_without_changing_other_terms(self):
+        url = yahoo_client.build_search_url("1/20 Lotus 79 OLYMPUS 1978")
+        self.assertNotIn("%2F", url.upper())
+        self.assertIn("p=1+20+Lotus+79+OLYMPUS+1978", url)
+
     def test_current_price_has_priority_over_one_yen_title(self):
         text = "1円〜 ジュエリー 現在 10,451円"
         self.assertEqual(yahoo_client.parse_price(text), 10451)

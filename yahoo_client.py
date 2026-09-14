@@ -25,10 +25,20 @@ class RateLimitError(RuntimeError):
         super().__init__(f"Yahoo!オークションからHTTP {self.status_code}")
 
 
+class SearchNotFoundError(RuntimeError):
+    def __init__(self, url=""):
+        self.status_code = 404
+        self.url = str(url or "")
+        super().__init__("Yahoo!オークション検索からHTTP 404")
+
+
 def build_search_url(query, category=""):
     category_path = str(category or "0").strip() or "0"
+    # Yahoo search can return 404 for an encoded slash in a free-text query.
+    # Keep the master rule untouched and normalize only the outbound query.
+    safe_query = " ".join(str(query or "").replace("/", " ").split())
     params = {
-        "p": str(query).strip(),
+        "p": safe_query,
         "s1": "new",
         "o1": "d",
     }
@@ -48,11 +58,17 @@ def fetch(url, timeout=20, retries=2, backoff_base_seconds=5, request_observer=N
                 if request_observer:
                     request_observer("HTTP_ERROR", response.status_code)
                 raise RateLimitError(response.status_code, url)
+            if response.status_code == 404:
+                if request_observer:
+                    request_observer("HTTP_ERROR", response.status_code)
+                raise SearchNotFoundError(url)
             if response.status_code >= 500 and request_observer:
                 request_observer("HTTP_ERROR", response.status_code)
             response.raise_for_status()
             return response.text
         except RateLimitError:
+            raise
+        except SearchNotFoundError:
             raise
         except Exception as error:
             if request_observer and (

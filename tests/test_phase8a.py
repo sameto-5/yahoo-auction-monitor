@@ -90,6 +90,20 @@ class Phase8AUnitTests(unittest.TestCase):
                 self.assertEqual(get.call_count, 1)
                 self.assertIn(("HTTP_ERROR", code), events)
 
+    def test_fetch_404_is_distinct_and_not_retried(self):
+        response = Mock(status_code=404)
+        events = []
+        with patch.object(
+            yahoo_client.requests, "get", return_value=response, create=True
+        ) as get:
+            with self.assertRaises(yahoo_client.SearchNotFoundError):
+                yahoo_client.fetch(
+                    "https://example.test", retries=2,
+                    request_observer=lambda *event: events.append(event),
+                )
+        self.assertEqual(get.call_count, 1)
+        self.assertIn(("HTTP_ERROR", 404), events)
+
 
 class Phase8AMainTests(unittest.TestCase):
     def _run(self, *, search_side_effect=None, watch_rows=None, active_rows=None,
@@ -216,6 +230,19 @@ class Phase8AMainTests(unittest.TestCase):
         appended_batches = [call.args[1] for call in run.appends.call_args_list]
         self.assertTrue(any(batch and batch[0].get("商品ID") == "saved"
                             for batch in appended_batches))
+
+    def test_search_404_skips_only_that_query_and_continues(self):
+        second = AuctionItem("second", "MODEL2", 1000, "https://x/second")
+        run = self._run(search_side_effect=[
+            yahoo_client.SearchNotFoundError("https://x/404"), [second]
+        ])
+        self.assertEqual(run.search.call_count, 2)
+        appended_batches = [call.args[1] for call in run.appends.call_args_list]
+        self.assertTrue(any(batch and batch[0].get("商品ID") == "second"
+                            for batch in appended_batches))
+        cursor_values = [call.args[2] for call in run.saves.call_args_list
+                         if "search_cursors" in call.args[2]]
+        self.assertTrue(cursor_values)
 
     def test_existing_watch_is_batch_updated_without_resetting_flags(self):
         active = self.active("same")

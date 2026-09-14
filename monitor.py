@@ -274,6 +274,8 @@ def new_run_metrics():
         "yahoo_http_403_count": 0,
         "yahoo_http_429_count": 0,
         "yahoo_http_5xx_count": 0,
+        "yahoo_http_404_count": 0,
+        "yahoo_search_404_skip_count": 0,
         "yahoo_timeout_count": 0,
         "yahoo_rate_limit_stop": False,
         "yahoo_rate_limit_stage": "NONE",
@@ -313,6 +315,8 @@ def request_observer(metrics, stage):
                 metrics["yahoo_http_403_count"] += 1
             elif status_code == 429:
                 metrics["yahoo_http_429_count"] += 1
+            elif status_code == 404:
+                metrics["yahoo_http_404_count"] += 1
             elif status_code is not None and status_code >= 500:
                 metrics["yahoo_http_5xx_count"] += 1
         elif event == "TIMEOUT":
@@ -446,6 +450,16 @@ def main():
             yahoo_access_blocked = True
             http_errors += 1
             break
+        except yahoo_client.SearchNotFoundError:
+            metrics["yahoo_search_404_skip_count"] += 1
+            print(
+                f"SEARCH_404_SKIP: query={group['query']} "
+                "action=continue_next_query"
+            )
+            # A deterministic invalid search URL must not pin the round-robin
+            # cursor forever. It is handled and this query slot is complete.
+            completed_groups.append(group)
+            continue
         except Exception as error:
             print(f"SEARCH_ERROR: {group['query']}: {error}")
             failed_queries.extend(item["query"] for item in selected[index:])

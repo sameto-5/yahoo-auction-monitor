@@ -6,6 +6,12 @@ PHASE 8Aでは、利益判定を追加せず、Yahooアクセスの安全停止�
 再検索更新、通知送信結果の確認、運用metricを追加しました。詳細は
 `PHASE8A_DEPLOY.md`を参照してください。
 
+### PHASE 8A.1
+
+`priority_items`の値は変更せず、Yahooへ送る検索query内の`/`だけを空白に
+正規化します。検索がHTTP 404を返した場合はそのqueryだけをskipし、
+残りのqueryとwatch/statusを継続します。403/429の全Yahoo HTTP停止は従来どおりです。
+
 オフモール監視とは独立した監視プロジェクトです。同じGoogleスプレッドシートの
 `priority_items`を読み取り専用で参照し、書き込みは`yahoo_`から始まる専用シートだけに行います。
 
