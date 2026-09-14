@@ -108,7 +108,8 @@ class Phase8AUnitTests(unittest.TestCase):
 class Phase8AMainTests(unittest.TestCase):
     def _run(self, *, search_side_effect=None, watch_rows=None, active_rows=None,
              detail_side_effect=None, status_side_effect=None,
-             search_item=None, discord_success=True):
+             search_item=None, discord_success=True, bootstrap_mode=False,
+             dry_run=False):
         watch_rows = list(watch_rows or [])
         active_rows = list(active_rows or [])
         sheets_by_name = {}
@@ -148,6 +149,8 @@ class Phase8AMainTests(unittest.TestCase):
         updates = Mock()
         appends = Mock()
         saves = Mock()
+        discord = Mock(return_value=discord_success)
+        line = Mock(return_value={"personal": True})
         with patch.multiple(
             monitor,
             open_book=Mock(return_value=object()),
@@ -160,20 +163,22 @@ class Phase8AMainTests(unittest.TestCase):
             delete_rows=Mock(),
             save_states=saves,
             wait_between_requests=Mock(),
-            send_discord=Mock(return_value=discord_success),
-            send_line_notifications=Mock(return_value={"personal": True}),
+            send_discord=discord,
+            send_line_notifications=line,
             YAHOO_BATCH_SIZE=batch_size,
             YAHOO_ENDING_CHECKS_PER_RUN=10,
             MAX_STATUS_CHECKS_PER_RUN=30,
             YAHOO_ACTIVE_START_HOUR=0,
             YAHOO_ACTIVE_END_HOUR=24,
-            DRY_RUN=False,
+            DRY_RUN=dry_run,
+            YAHOO_BOOTSTRAP_MODE=bootstrap_mode,
         ), patch.object(monitor.yahoo_client, "search", search), patch.object(
             monitor.yahoo_client, "get_detail", detail
         ), patch.object(monitor.yahoo_client, "check_status", status):
             monitor.main()
         return SimpleNamespace(search=search, detail=detail, status=status,
-                               updates=updates, appends=appends, saves=saves)
+                               updates=updates, appends=appends, saves=saves,
+                               discord=discord, line=line)
 
     @staticmethod
     def due_watch(item_id):
@@ -294,6 +299,48 @@ class Phase8AMainTests(unittest.TestCase):
         self.assertTrue(updated)
         self.assertEqual(updated[-1]["ending_notified"], "0")
         self.assertEqual(updated[-1]["詳細確認済み"], "0")
+
+    def test_bootstrap_registers_immediate_candidate_without_sending(self):
+        item = AuctionItem(
+            "bootstrap", "MODEL1", 1000, "https://x/bootstrap",
+            shipping_fee=0, listing_type="fixed",
+        )
+        run = self._run(search_item=item, bootstrap_mode=True)
+        self.assertEqual(run.discord.call_count, 0)
+        self.assertEqual(run.line.call_count, 0)
+        notified_batches = [
+            call.args[1] for call in run.appends.call_args_list
+            if getattr(call.args[0], "title", "") == "yahoo_notified_items"
+        ]
+        records = [record for batch in notified_batches for record in batch]
+        self.assertEqual(records[0]["通知種別"], "BOOTSTRAP_SUPPRESSED")
+
+    def test_bootstrap_tracks_completed_queries_in_monitor_state(self):
+        second = AuctionItem("second", "MODEL2", 1000, "https://x/second")
+        run = self._run(
+            search_side_effect=[[], [second]], bootstrap_mode=True
+        )
+        state_updates = [call.args[2] for call in run.saves.call_args_list]
+        progress = [value for value in state_updates
+                    if "bootstrap_completed_queries" in value]
+        self.assertTrue(progress)
+        self.assertEqual(len(__import__("json").loads(
+            progress[-1]["bootstrap_completed_queries"]
+        )), 2)
+
+    def test_bootstrap_suppresses_ending_notification(self):
+        watch = self.due_watch("bootstrap-ending")
+        run = self._run(watch_rows=[watch], bootstrap_mode=True)
+        self.assertEqual(run.discord.call_count, 0)
+        watch_batches = [
+            call.args[1] for call in run.updates.call_args_list
+            if getattr(call.args[0], "title", "") == "yahoo_auction_watch"
+            and call.args[1]
+        ]
+        updated = [record for batch in watch_batches for _, record in batch
+                   if record.get("商品ID") == "bootstrap-ending"]
+        self.assertEqual(updated[-1]["ending_notified"], "1")
+        self.assertEqual(updated[-1]["詳細確認済み"], "1")
 
 
 if __name__ == "__main__":

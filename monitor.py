@@ -41,6 +41,9 @@ FAST_SOLD_MINUTES = int(os.getenv("FAST_SOLD_MINUTES", "10"))
 YAHOO_ENDING_CHECK_MINUTES = int(os.getenv("YAHOO_ENDING_CHECK_MINUTES", "30"))
 YAHOO_ENDING_CHECKS_PER_RUN = int(os.getenv("YAHOO_ENDING_CHECKS_PER_RUN", "10"))
 DRY_RUN = os.getenv("DRY_RUN", "0").strip().lower() in {"1", "true", "yes", "on"}
+YAHOO_BOOTSTRAP_MODE = os.getenv("YAHOO_BOOTSTRAP_MODE", "0").strip().lower() in {
+    "1", "true", "yes", "on"
+}
 
 GOOGLE_CREDENTIALS = os.getenv("GOOGLE_CREDENTIALS")
 SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
@@ -296,6 +299,13 @@ def new_run_metrics():
         "line_attempt_count": 0,
         "line_success_count": 0,
         "line_failed_count": 0,
+        "yahoo_bootstrap_mode": False,
+        "yahoo_bootstrap_registered_count": 0,
+        "yahoo_bootstrap_suppressed_count": 0,
+        "yahoo_bootstrap_query_total_count": 0,
+        "yahoo_bootstrap_query_completed_count": 0,
+        "yahoo_bootstrap_query_remaining_count": 0,
+        "yahoo_bootstrap_complete": False,
     }
 
 
@@ -388,6 +398,9 @@ def record_channel_result(metrics, channel, success):
 def main():
     started = datetime.now(JST)
     metrics = new_run_metrics()
+    metrics["yahoo_bootstrap_mode"] = bool(YAHOO_BOOTSTRAP_MODE)
+    if YAHOO_BOOTSTRAP_MODE and DRY_RUN:
+        print("BOOTSTRAP_WAITING: DRY_RUN=1 does not persist baseline state")
     print(f"RUN_START: {started.strftime('%Y-%m-%d %H:%M:%S')}")
     if not (YAHOO_ACTIVE_START_HOUR <= started.hour < YAHOO_ACTIVE_END_HOUR):
         print("SCHEDULE_SKIP: Yahoo active hours outside sheets_read=0 sheets_write=0")
@@ -413,6 +426,18 @@ def main():
     except (TypeError, ValueError):
         cursors = {}
     groups = build_query_groups(rules)
+    group_keys = {group["key"] for group in groups}
+    bootstrap_completed_keys = set()
+    if YAHOO_BOOTSTRAP_MODE and not DRY_RUN:
+        try:
+            bootstrap_completed_keys = {
+                str(value) for value in json.loads(
+                    state.get("bootstrap_completed_queries", "[]")
+                ) if str(value) in group_keys
+            }
+        except (TypeError, ValueError):
+            bootstrap_completed_keys = set()
+        metrics["yahoo_bootstrap_query_total_count"] = len(group_keys)
     original_cursors = dict(cursors)
     selected, _proposed_cursors = select_query_groups(groups, YAHOO_BATCH_SIZE, cursors)
     cursor_selection_ids = {id(group) for group in selected}
@@ -556,6 +581,19 @@ def main():
     notified_records = []
     for item, rule in notification_jobs:
         try:
+            if YAHOO_BOOTSTRAP_MODE and not DRY_RUN:
+                metrics["yahoo_bootstrap_suppressed_count"] += 1
+                notified_records.append({
+                    "商品ID": item.item_id, "商品URL": item.url,
+                    "通知日時": discovered_at,
+                    "通知種別": "BOOTSTRAP_SUPPRESSED",
+                    "商品名": item.title, "価格": item.price or "",
+                })
+                print(
+                    f"BOOTSTRAP_NOTIFICATION_SUPPRESSED: item_id={item.item_id} "
+                    "baseline_notified=1"
+                )
+                continue
             deliveries = []
             if DISCORD_WEBHOOK_URL or DRY_RUN:
                 deliveries.append(record_channel_result(
@@ -645,13 +683,24 @@ def main():
                     )
                     rule = rule_map.get(str(row.get("priority_rule_id")))
                     if not DRY_RUN:
-                        deliveries = []
-                        if rule and channel_enabled(rule.get("Discord通知"), True):
+                        if YAHOO_BOOTSTRAP_MODE:
+                            metrics["yahoo_bootstrap_suppressed_count"] += 1
+                            updated["ending_notified"] = "1"
+                            print(
+                                f"BOOTSTRAP_ENDING_SUPPRESSED: item_id={row.get('商品ID')} "
+                                "ending_notified=1"
+                            )
+                            deliveries = [True]
+                        else:
+                            deliveries = []
+                        if (not YAHOO_BOOTSTRAP_MODE and rule
+                                and channel_enabled(rule.get("Discord通知"), True)):
                             deliveries.append(record_channel_result(
                                 metrics, "discord",
                                 send_discord(DISCORD_PRIORITY_WEBHOOK_URL, message, False),
                             ))
-                        if rule and channel_enabled(rule.get("LINE通知"), False):
+                        if (not YAHOO_BOOTSTRAP_MODE and rule
+                                and channel_enabled(rule.get("LINE通知"), False)):
                             line_results = send_line_notifications(
                                 LINE_CHANNEL_ACCESS_TOKEN, LINE_USER_ID, LINE_GROUP_ID,
                                 LINE_NOTIFY_MODE, message, False,
@@ -755,13 +804,20 @@ def main():
             "status_class": row.get("status_class"), "status_reason": row.get("status_reason"),
         }
         sold_records.append(sold_record)
-        record_channel_result(metrics, "discord", send_discord(
-            DISCORD_SOLD_WEBHOOK_URL, (
-                f"🔥 ヤフオク {FAST_SOLD_MINUTES}分以内SOLD\n{row.get('商品名')}\n"
-                f"価格：{format_money(int(row['最新価格'])) if str(row.get('最新価格', '')).isdigit() else row.get('最新価格')}\n"
-                f"初回検知から{minutes}分\n{row.get('商品URL')}"
-            ), DRY_RUN
-        ))
+        if YAHOO_BOOTSTRAP_MODE and not DRY_RUN:
+            metrics["yahoo_bootstrap_suppressed_count"] += 1
+            print(
+                f"BOOTSTRAP_SOLD_NOTIFICATION_SUPPRESSED: "
+                f"item_id={row.get('商品ID')}"
+            )
+        else:
+            record_channel_result(metrics, "discord", send_discord(
+                DISCORD_SOLD_WEBHOOK_URL, (
+                    f"🔥 ヤフオク {FAST_SOLD_MINUTES}分以内SOLD\n{row.get('商品名')}\n"
+                    f"価格：{format_money(int(row['最新価格'])) if str(row.get('最新価格', '')).isdigit() else row.get('最新価格')}\n"
+                    f"初回検知から{minutes}分\n{row.get('商品URL')}"
+                ), DRY_RUN
+            ))
         key = str(row.get("型番キー") or "")
         if key and key not in candidate_keys:
             candidate_records.append({
@@ -783,12 +839,30 @@ def main():
         append_records(candidates_ws, candidate_records)
     cursor_completed = [group for group in completed_groups if id(group) in cursor_selection_ids]
     final_cursors = committed_cursors(groups, original_cursors, cursor_completed)
+    if YAHOO_BOOTSTRAP_MODE and not DRY_RUN:
+        bootstrap_completed_keys.update(
+            group["key"] for group in completed_groups
+        )
+        bootstrap_completed_keys.intersection_update(group_keys)
+        remaining = group_keys - bootstrap_completed_keys
+        metrics["yahoo_bootstrap_query_completed_count"] = len(
+            bootstrap_completed_keys
+        )
+        metrics["yahoo_bootstrap_query_remaining_count"] = len(remaining)
+        metrics["yahoo_bootstrap_complete"] = not remaining
     if not DRY_RUN:
-        save_states(state_ws, state_rows, {
+        operational_states = {
             "failed_queries": json.dumps(failed_queries, ensure_ascii=False),
             "status_cursor": str(next_status_cursor),
             "last_completed_at": now_jst(),
-        })
+        }
+        if YAHOO_BOOTSTRAP_MODE:
+            operational_states["bootstrap_completed_queries"] = json.dumps(
+                sorted(bootstrap_completed_keys), ensure_ascii=False
+            )
+            if metrics["yahoo_bootstrap_complete"]:
+                operational_states["bootstrap_completed_at"] = now_jst()
+        save_states(state_ws, state_rows, operational_states)
         # 履歴・商品・補助状態の保存がすべて成功した後、最後に検索カーソルをcommitする。
         save_states(state_ws, state_rows, {
             "search_cursors": json.dumps(final_cursors, ensure_ascii=False),
@@ -800,6 +874,9 @@ def main():
         f"完了: 有効ルール={len(rules)} 検索語={len(groups)} 今回検索={len(selected)} "
         f"取得商品={len(found)} 失敗検索={len(failed_queries)}"
     )
+    metrics["yahoo_bootstrap_registered_count"] = (
+        len(new_item_records) if YAHOO_BOOTSTRAP_MODE and not DRY_RUN else 0
+    )
     metrics["run_total_seconds"] = round(
         (datetime.now(JST) - started).total_seconds(), 3
     )
@@ -809,7 +886,9 @@ def main():
         f"end={json.dumps(final_cursors, ensure_ascii=False)} completed={len(completed_groups)}"
     )
     print(
-        f"RUN_END: {now_jst()} candidates={len(notification_jobs)} notifications={len(notified_records)} "
+        f"RUN_END: {now_jst()} candidates={len(notification_jobs)} "
+        f"notifications={sum(record.get('通知種別') != 'BOOTSTRAP_SUPPRESSED' for record in notified_records)} "
+        f"notification_records={len(notified_records)} "
         f"http_errors={http_errors} sheets_read={sheets.CONTEXT.read_count} "
         f"sheets_write={sheets.CONTEXT.write_count}"
     )

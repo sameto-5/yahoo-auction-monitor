@@ -12,6 +12,13 @@ PHASE 8Aでは、利益判定を追加せず、Yahooアクセスの安全停止�
 正規化します。検索がHTTP 404を返した場合はそのqueryだけをskipし、
 残りのqueryとwatch/statusを継続します。403/429の全Yahoo HTTP停止は従来どおりです。
 
+### PHASE 8A.2 Bootstrap Mode
+
+`DRY_RUN=0`、`YAHOO_BOOTSTRAP_MODE=1`で、既存商品・watch・cursorをSheetsへ
+baseline登録しながらDiscord/LINE実送信を抑止します。検索queryの進捗は
+`yahoo_monitor_state`に保存されます。`yahoo_bootstrap_complete=true`を確認するまで
+Bootstrap Modeを維持してください。
+
 オフモール監視とは独立した監視プロジェクトです。同じGoogleスプレッドシートの
 `priority_items`を読み取り専用で参照し、書き込みは`yahoo_`から始まる専用シートだけに行います。
 
