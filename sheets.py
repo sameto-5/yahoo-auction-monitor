@@ -3,6 +3,7 @@ import json
 import gspread
 from google.oauth2.service_account import Credentials
 from sheets_access import SheetsRunContext
+from rule_loader import REQUIRED_HEADERS
 
 
 PRIORITY_REQUIRED_HEADERS = ["有効", "優先度", "ブランド", "型番", "キーワード", "除外キーワード"]
@@ -69,6 +70,15 @@ def get_priority_rows_read_only(book):
     if missing:
         raise RuntimeError(f"priority_items 必須列不足: {', '.join(missing)}")
     return cached_records(worksheet)
+
+
+def get_yahoo_rule_rows_read_only(book, sheet_name="yahoo_auction_rules"):
+    worksheet = book.worksheet(sheet_name)
+    headers = cached_headers(worksheet)
+    missing = sorted(REQUIRED_HEADERS - set(headers))
+    if missing:
+        raise RuntimeError(f"{sheet_name} 必須列不足: {', '.join(missing)}")
+    return cached_records(worksheet), headers
 
 
 def get_or_create_sheet(book, name, headers, rows=1000):

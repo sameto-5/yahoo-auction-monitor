@@ -1,24 +1,5 @@
 # ヤフオク監視
 
-## PHASE 8A
-
-PHASE 8Aでは、利益判定を追加せず、Yahooアクセスの安全停止、watch情報の
-再検索更新、通知送信結果の確認、運用metricを追加しました。詳細は
-`PHASE8A_DEPLOY.md`を参照してください。
-
-### PHASE 8A.1
-
-`priority_items`の値は変更せず、Yahooへ送る検索query内の`/`だけを空白に
-正規化します。検索がHTTP 404を返した場合はそのqueryだけをskipし、
-残りのqueryとwatch/statusを継続します。403/429の全Yahoo HTTP停止は従来どおりです。
-
-### PHASE 8A.2 Bootstrap Mode
-
-`DRY_RUN=0`、`YAHOO_BOOTSTRAP_MODE=1`で、既存商品・watch・cursorをSheetsへ
-baseline登録しながらDiscord/LINE実送信を抑止します。検索queryの進捗は
-`yahoo_monitor_state`に保存されます。`yahoo_bootstrap_complete=true`を確認するまで
-Bootstrap Modeを維持してください。
-
 オフモール監視とは独立した監視プロジェクトです。同じGoogleスプレッドシートの
 `priority_items`を読み取り専用で参照し、書き込みは`yahoo_`から始まる専用シートだけに行います。
 
@@ -112,3 +93,26 @@ SHEETS_BACKOFF_BASE_SECONDS=3
 
 Yahoo!オークションのHTML変更により解析調整が必要になる場合があります。単なる終了表示は
 落札と断定せず`ended`として記録し、明確な落札表記がある場合のみ`sold`として扱います。
+
+## PHASE 8D Shadow
+
+`shadow_monitor.py`は既存の`monitor.py`から独立した終了間近監視です。設定は
+`yahoo_auction_rules`を読み取り専用で使い、`yahoo_auction_watch`の用途や列は変更しません。
+
+安全初期値は必ず次のとおりです。
+
+```text
+YAHOO_AUCTION_ENABLED=false
+YAHOO_AUCTION_SHADOW=true
+YAHOO_AUCTION_NOTIFY_ENABLED=false
+```
+
+`ENABLED=false`の場合はSheets、Yahoo、Neonのいずれにも接続しません。Shadow実行は
+`python shadow_monitor.py`であり、通知モジュールをimport・呼び出しません。
+
+ルールは行番号ではなく`rule_id`と最終処理時刻で巡回します。最も古いルールが優先され、
+優先度は同時刻の場合のタイブレークにだけ使います。10分間隔・1回30ルールなら、
+100ルールの理論上の一巡時間は40分です。投影値が60分を超える設定は警告します。
+
+DB migrationは`migrations/001_yahoo_auction_shadow.sql`です。本番適用前にSQLレビューを行い、
+migration適用後も有効化フラグは`false`のままにしてください。
