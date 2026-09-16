@@ -78,6 +78,7 @@ def run(connection):
     budget = env_int("YAHOO_AUCTION_RUN_BUDGET_SECONDS", 180)
     max_rules = env_int("YAHOO_AUCTION_MAX_RULES_PER_RUN", 30)
     max_items = env_int("YAHOO_AUCTION_MAX_ITEMS_PER_RUN", 100)
+    max_items_per_rule = env_int("YAHOO_AUCTION_MAX_ITEMS_PER_RULE", 15)
     max_details = env_int("YAHOO_AUCTION_MAX_DETAIL_FETCHES", 20)
     max_upserts = env_int("YAHOO_AUCTION_MAX_SHADOW_UPSERTS", 100)
     sample_limit = env_int("YAHOO_AUCTION_AUDIT_SAMPLE_LIMIT", 20)
@@ -95,7 +96,11 @@ def run(connection):
     state = database.load_scheduler_state(connection)
     selected = select_rules(rules, state, max_rules)
     projection = cycle_projection(len(rules), max_rules, cron_minutes)
-    print(f"YAHOO_SHADOW_CYCLE: rules={len(rules)} per_run={max_rules} cron_minutes={cron_minutes} projected_minutes={projection['minutes']}")
+    print(
+        f"YAHOO_SHADOW_CYCLE: rules={len(rules)} per_run={max_rules} "
+        f"items_per_rule={max_items_per_rule} items_per_run={max_items} "
+        f"cron_minutes={cron_minutes} projected_minutes={projection['minutes']}"
+    )
     if projection["minutes"] > lookahead:
         print(f"YAHOO_SHADOW_CYCLE_WARNING: projected_minutes={projection['minutes']} lookahead_minutes={lookahead}")
     records, attempted, fetched, details, errors, ending, processed_items = [], [], 0, 0, 0, 0, 0
@@ -104,6 +109,10 @@ def run(connection):
         grouped.setdefault(rule.query, []).append(rule)
     stop = False
     for query, query_rules in grouped.items():
+        remaining_item_capacity = max_items - processed_items
+        if remaining_item_capacity <= 0:
+            stop = True
+            break
         if time.monotonic() - start_clock >= budget - 21:
             stop = True
             break
@@ -114,7 +123,6 @@ def run(connection):
                 retries=env_int("YAHOO_AUCTION_HTTP_MAX_RETRIES", 2),
                 backoff_base_seconds=env_int("YAHOO_AUCTION_HTTP_BACKOFF_SECONDS", 5),
             )
-            fetched += len(items)
             attempted.extend(query_rules)
         except yahoo_client.RateLimitError as error:
             print(f"YAHOO_SHADOW_RATE_LIMIT_STOP: {type(error).__name__}")
@@ -126,10 +134,9 @@ def run(connection):
             errors += 1
             attempted.extend(query_rules)
             continue
+        items = items[:min(max_items_per_rule, remaining_item_capacity)]
+        fetched += len(items)
         for item in items:
-            if processed_items >= max_items:
-                stop = True
-                break
             processed_items += 1
             for rule in query_rules:
                 now = datetime.now(timezone.utc)
@@ -171,10 +178,6 @@ def run(connection):
                 p_limit = priority_limit(rule, priority_rows, status_class)
                 result = evaluate(rule, item.price, shipping, status_class, p_limit)
                 records.append(make_record(item, rule, result, remaining, end_at, p_limit, now))
-            if stop:
-                break
-        if stop:
-            break
         interval = env_int("YAHOO_AUCTION_REQUEST_INTERVAL_MS", 1000) / 1000
         if interval > 0:
             time.sleep(interval)
