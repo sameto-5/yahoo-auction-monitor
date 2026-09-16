@@ -22,6 +22,10 @@ def row(rule_id):
 
 
 class ShadowItemLimitTests(unittest.TestCase):
+    def test_global_budget_is_shared_without_starving_the_third_query(self):
+        self.assertEqual(shadow_monitor.distribute_query_limits(3, 30, 15), [10, 10, 10])
+        self.assertEqual(shadow_monitor.distribute_query_limits(3, 50, 15), [15, 15, 15])
+
     def test_three_rules_each_process_at_most_fifteen_results(self):
         search = SimpleNamespace(
             search=lambda query, **kwargs: [
