@@ -24,6 +24,22 @@ def env_int(name, default):
     return int(os.getenv(name, str(default)))
 
 
+def distribute_query_limits(query_count, total_limit, per_rule_limit):
+    """Distribute the global item budget without starving later queries."""
+    if query_count <= 0 or total_limit <= 0 or per_rule_limit <= 0:
+        return [0] * max(query_count, 0)
+    base = min(per_rule_limit, total_limit // query_count)
+    limits = [base] * query_count
+    remaining = total_limit - (base * query_count)
+    for index in range(query_count):
+        extra = min(per_rule_limit - limits[index], remaining)
+        limits[index] += extra
+        remaining -= extra
+        if remaining <= 0:
+            break
+    return limits
+
+
 def priority_limit(rule, priority_rows, status_class):
     key = normalize(rule.priority_lookup_model)
     limits = []
@@ -107,12 +123,16 @@ def run(connection):
     grouped = {}
     for rule in selected:
         grouped.setdefault(rule.query, []).append(rule)
+    query_limits = distribute_query_limits(len(grouped), max_items, max_items_per_rule)
+    if query_limits and min(query_limits) == 0:
+        print(
+            f"YAHOO_SHADOW_ITEM_BUDGET_WARNING: query_groups={len(grouped)} "
+            f"items_per_run={max_items} action=increase_global_limit"
+        )
     stop = False
-    for query, query_rules in grouped.items():
-        remaining_item_capacity = max_items - processed_items
-        if remaining_item_capacity <= 0:
-            stop = True
-            break
+    for (query, query_rules), query_limit in zip(grouped.items(), query_limits):
+        if query_limit <= 0:
+            continue
         if time.monotonic() - start_clock >= budget - 21:
             stop = True
             break
@@ -134,7 +154,7 @@ def run(connection):
             errors += 1
             attempted.extend(query_rules)
             continue
-        items = items[:min(max_items_per_rule, remaining_item_capacity)]
+        items = items[:query_limit]
         fetched += len(items)
         for item in items:
             processed_items += 1
