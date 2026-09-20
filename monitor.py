@@ -109,7 +109,7 @@ def rule_id(rule):
 def prepare_rules(rows):
     result = []
     for row in rows:
-        if not is_enabled(row.get("有効")):
+        if is_enabled(row.get("deleted")) or not is_enabled(row.get("有効")):
             continue
         if not row.get("型番") and not row.get("キーワード"):
             continue
