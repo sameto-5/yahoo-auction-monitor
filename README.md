@@ -137,6 +137,18 @@ batch writeで保存します。leaseだけでは完全なCASを実現できな�
 相場統計が未登録、サンプル不足、低信頼度、または古い場合は`DATA_INSUFFICIENT`として
 Shadow保存し、`CANDIDATE`にはしません。初期値は5サンプル、信頼度0.5、30日以内です。
 
+## PHASE 8E Discord通知
+
+PHASE 8EはPHASE 8DのSheets保存を継続しながら、終了30分以内の`CANDIDATE`と
+終了15分以内の`STRONG_CANDIDATE`だけをYahoo専用Discord Webhookへ送信します。
+`YAHOO_DISCORD_WEBHOOK_URL`が空の場合は外部アクセス前に安全停止し、Off-Mall用Webhookへ
+フォールバックしません。`YAHOO_AUCTION_NOTIFY_ENABLED=false`へ戻せば検索・Shadow保存を
+維持したまま通知だけを停止できます。
+
+送信済みは`yahoo_notification_state`へ`auction_id + rule_id + notification_stage`で保存し、
+同一段階は再送しません。失敗だけを`yahoo_notification_retry`へ保存し、最大3回の指数
+バックオフを行います。Webhookや認証情報はSheets・ログへ保存しません。
+
 初期安全設定：
 
 ```text

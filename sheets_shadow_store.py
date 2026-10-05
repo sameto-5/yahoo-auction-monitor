@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -23,6 +24,13 @@ RESULT_HEADERS = [
     "minutes_remaining", "end_at", "decision", "reason_code",
     "reason_detail", "first_seen_at", "last_seen_at", "expires_at",
 ]
+NOTIFICATION_HEADERS = [
+    "auction_id", "rule_id", "notification_stage", "sent_at", "message_hash",
+]
+RETRY_HEADERS = [
+    "auction_id", "rule_id", "notification_stage", "attempt_count", "next_attempt_at",
+    "end_at", "payload_json", "last_error", "updated_at",
+]
 RUN_STATS_HEADERS = [
     "run_date", "run_count", "completed_count", "skipped_locked_count",
     "duration_ms_total", "enabled_rule_count_last", "searched_rule_count_total",
@@ -37,6 +45,8 @@ SHEET_DEFINITIONS = {
     "yahoo_model_stats": MODEL_STATS_HEADERS,
     "yahoo_shadow_results": RESULT_HEADERS,
     "yahoo_run_stats": RUN_STATS_HEADERS,
+    "yahoo_notification_state": NOTIFICATION_HEADERS,
+    "yahoo_notification_retry": RETRY_HEADERS,
 }
 
 
@@ -117,6 +127,7 @@ class ShadowSheetsStore:
             f"'{rules_sheet}'!A:Z", "'priority_items'!A:Z",
             "'yahoo_shadow_cursor'!A:H", "'yahoo_model_stats'!A:H",
             "'yahoo_shadow_results'!A:AA", "'yahoo_run_stats'!A:T",
+            "'yahoo_notification_state'!A:E", "'yahoo_notification_retry'!A:I",
         ]
         result = self.book.values_batch_get(ranges, params={"majorDimension": "ROWS"})
         self.read_calls += 1
@@ -198,6 +209,51 @@ class ShadowSheetsStore:
         self.rows["yahoo_shadow_results"] = [r for r in rows if id(r) not in doomed]
         return len(doomed)
 
+    def sent_notification_keys(self):
+        return {
+            (str(r.get("auction_id", "")), str(r.get("rule_id", "")), str(r.get("notification_stage", "")))
+            for r in self.rows.get("yahoo_notification_state", [])
+            if r.get("auction_id") and r.get("rule_id") and r.get("notification_stage")
+        }
+
+    def retry_rows(self):
+        return self.rows.get("yahoo_notification_retry", [])
+
+    def mark_notification_sent(self, record, stage, sent_at, message_hash):
+        key = (str(record["auction_id"]), str(record["rule_id"]), stage)
+        rows = {
+            (str(r.get("auction_id", "")), str(r.get("rule_id", "")), str(r.get("notification_stage", ""))): dict(r)
+            for r in self.rows.get("yahoo_notification_state", [])
+            if r.get("auction_id") and r.get("rule_id") and r.get("notification_stage")
+        }
+        rows[key] = {
+            "auction_id": key[0], "rule_id": key[1], "notification_stage": stage,
+            "sent_at": sent_at, "message_hash": message_hash,
+        }
+        self.rows["yahoo_notification_state"] = list(rows.values())
+        self.remove_retry(key)
+
+    def queue_retry(self, record, stage, payload, attempt_count, next_attempt_at, error, now):
+        key = (str(record["auction_id"]), str(record["rule_id"]), stage)
+        rows = {
+            (str(r.get("auction_id", "")), str(r.get("rule_id", "")), str(r.get("notification_stage", ""))): dict(r)
+            for r in self.rows.get("yahoo_notification_retry", [])
+            if r.get("auction_id") and r.get("rule_id") and r.get("notification_stage")
+        }
+        rows[key] = {
+            "auction_id": key[0], "rule_id": key[1], "notification_stage": stage,
+            "attempt_count": attempt_count, "next_attempt_at": next_attempt_at,
+            "end_at": record.get("end_at"), "payload_json": json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+            "last_error": str(error)[:100], "updated_at": now,
+        }
+        self.rows["yahoo_notification_retry"] = list(rows.values())
+
+    def remove_retry(self, key):
+        self.rows["yahoo_notification_retry"] = [
+            r for r in self.rows.get("yahoo_notification_retry", [])
+            if (str(r.get("auction_id", "")), str(r.get("rule_id", "")), str(r.get("notification_stage", ""))) != key
+        ]
+
     def aggregate_run_stats(self, stats):
         key = stats["finished_at"].astimezone(timezone.utc).date().isoformat()
         by_date = {str(r.get("run_date")): dict(r) for r in self.rows.get("yahoo_run_stats", []) if r.get("run_date")}
@@ -233,7 +289,10 @@ class ShadowSheetsStore:
             r for r in self.rows.get("yahoo_shadow_cursor", [])
             if r.get("record_type") != "LEASE" or r.get("run_id") != getattr(self.lease, "run_id", None)
         ]
-        self._write_tables(["yahoo_shadow_cursor", "yahoo_shadow_results", "yahoo_run_stats"])
+        self._write_tables([
+            "yahoo_shadow_cursor", "yahoo_shadow_results", "yahoo_run_stats",
+            "yahoo_notification_state", "yahoo_notification_retry",
+        ])
         self.lease = None
 
     def release_best_effort(self):
