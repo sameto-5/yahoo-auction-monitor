@@ -107,16 +107,45 @@ YAHOO_AUCTION_SHADOW=true
 YAHOO_AUCTION_NOTIFY_ENABLED=false
 ```
 
-`ENABLED=false`の場合はSheets、Yahoo、Neonのいずれにも接続しません。Shadow実行は
+`ENABLED=false`の場合はSheets、Yahooのいずれにも接続しません。Shadow実行は
 `python shadow_monitor.py`であり、通知モジュールをimport・呼び出しません。
 
 ルールは行番号ではなく`rule_id`と最終処理時刻で巡回します。最も古いルールが優先され、
-優先度は同時刻の場合のタイブレークにだけ使います。10分間隔・1回30ルールなら、
-100ルールの理論上の一巡時間は40分です。投影値が60分を超える設定は警告します。
+優先度は同時刻の場合のタイブレークにだけ使います。30分間隔・1回30ルールなら、
+100ルールの理論上の一巡時間は120分です。投影値が検索先読み時間を超える設定は警告します。
 
 検索結果は初期値で1ルールあたり15件、1実行全体で50件まで処理します。3ルール限定実行なら
 最大45件となるため、先頭ルールの検索結果だけで全体上限を使い切らず、選択した3ルールを
 順番に処理できます。同一検索語を共有するルールは1回のHTTP検索結果を共用します。
 
-DB migrationは`migrations/001_yahoo_auction_shadow.sql`です。本番適用前にSQLレビューを行い、
-migration適用後も有効化フラグは`false`のままにしてください。
+Shadowの実行時保存先はGoogle Sheetsのみです。Neonや`DATABASE_URL`には接続しません。
+既存のDB migrationは履歴として残しますが、Shadow実行経路からは参照しません。
+
+専用シートは次の4枚です。既存の`yahoo_auction_rules`、`priority_items`、
+`yahoo_auction_watch`の列・データは変更しません。
+
+- `yahoo_shadow_cursor`: `rule_id`別最終処理時刻と期限付きlease
+- `yahoo_model_stats`: 型番別の件数・中央値・四分位・信頼度・更新日時
+- `yahoo_shadow_results`: `(auction_id, rule_id)`で上書きする最小Shadow結果
+- `yahoo_run_stats`: UTC日付ごとの集約実行統計
+
+定常時は、専用4シートとルール・優先商品を1回のbatch readで取得し、leaseを1回の
+batch writeで取得後に再読込確認します。処理終了時はcursor・結果・日次統計を1回の
+batch writeで保存します。leaseだけでは完全なCASを実現できないため、Render Cronの
+単一実行制御と併用し、期限切れleaseだけを取得します。
+
+相場統計が未登録、サンプル不足、低信頼度、または古い場合は`DATA_INSUFFICIENT`として
+Shadow保存し、`CANDIDATE`にはしません。初期値は5サンプル、信頼度0.5、30日以内です。
+
+初期安全設定：
+
+```text
+YAHOO_AUCTION_ENABLED=false
+YAHOO_AUCTION_SHADOW=true
+YAHOO_AUCTION_NOTIFY_ENABLED=false
+YAHOO_AUCTION_MAX_RULES_PER_RUN=30
+YAHOO_AUCTION_MAX_ITEMS_PER_RULE=15
+YAHOO_AUCTION_MAX_ITEMS_PER_RUN=50
+YAHOO_AUCTION_LOOKAHEAD_MINUTES=180
+YAHOO_AUCTION_EXPECTED_CRON_INTERVAL_MINUTES=30
+```

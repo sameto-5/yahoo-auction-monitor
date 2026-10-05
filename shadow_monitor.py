@@ -1,13 +1,12 @@
 import os
 import time
-import uuid
 import importlib
 from datetime import datetime, timedelta, timezone
 
-import database
 from condition import classify_item_condition, prices_for_condition
 from profit_evaluator import evaluate
 from rule_loader import enabled, normalize, parse_rules
+from sheets_shadow_store import ShadowSheetsStore
 from shadow_pipeline import choose_records, cycle_projection, mark_processed, select_rules, title_match
 
 
@@ -89,27 +88,53 @@ def make_record(item, rule, result, remaining, end_at, priority_purchase_limit, 
     }
 
 
-def run(connection):
+def model_data_decision(rule, model_stats, now):
+    row = model_stats.get(normalize(rule.model))
+    if not row:
+        return "DATA_INSUFFICIENT", "MODEL_STATS_MISSING"
+    try:
+        sample_count = int(float(row.get("sample_count") or 0))
+    except (TypeError, ValueError):
+        sample_count = 0
+    if sample_count < env_int("YAHOO_AUCTION_MODEL_MIN_SAMPLES", 5):
+        return "DATA_INSUFFICIENT", "MODEL_SAMPLE_TOO_SMALL"
+    try:
+        confidence = float(row.get("confidence") or 0)
+    except (TypeError, ValueError):
+        confidence = 0
+    if confidence < float(os.getenv("YAHOO_AUCTION_MODEL_MIN_CONFIDENCE", "0.5")):
+        return "DATA_INSUFFICIENT", "MODEL_CONFIDENCE_LOW"
+    updated = str(row.get("updated_at") or "")
+    try:
+        updated_at = datetime.fromisoformat(updated.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return "DATA_INSUFFICIENT", "MODEL_STATS_STALE"
+    if now - updated_at > timedelta(days=env_int("YAHOO_AUCTION_MODEL_MAX_AGE_DAYS", 30)):
+        return "DATA_INSUFFICIENT", "MODEL_STATS_STALE"
+    return None, None
+
+
+def run(store):
     started = datetime.now(timezone.utc)
     budget = env_int("YAHOO_AUCTION_RUN_BUDGET_SECONDS", 180)
     max_rules = env_int("YAHOO_AUCTION_MAX_RULES_PER_RUN", 30)
-    max_items = env_int("YAHOO_AUCTION_MAX_ITEMS_PER_RUN", 100)
+    max_items = env_int("YAHOO_AUCTION_MAX_ITEMS_PER_RUN", 50)
     max_items_per_rule = env_int("YAHOO_AUCTION_MAX_ITEMS_PER_RULE", 15)
     max_details = env_int("YAHOO_AUCTION_MAX_DETAIL_FETCHES", 20)
     max_upserts = env_int("YAHOO_AUCTION_MAX_SHADOW_UPSERTS", 100)
     sample_limit = env_int("YAHOO_AUCTION_AUDIT_SAMPLE_LIMIT", 20)
-    lookahead = env_int("YAHOO_AUCTION_LOOKAHEAD_MINUTES", 60)
-    cron_minutes = env_int("YAHOO_AUCTION_EXPECTED_CRON_INTERVAL_MINUTES", 10)
-    sheet_name = os.getenv("YAHOO_AUCTION_RULES_SHEET", "yahoo_auction_rules")
-    book = sheets.open_book(os.getenv("GOOGLE_CREDENTIALS"), os.getenv("SPREADSHEET_ID"))
-    rule_rows, headers = sheets.get_yahoo_rule_rows_read_only(book, sheet_name)
-    priority_rows = sheets.get_priority_rows_read_only(book)
+    lookahead = env_int("YAHOO_AUCTION_LOOKAHEAD_MINUTES", 180)
+    cron_minutes = env_int("YAHOO_AUCTION_EXPECTED_CRON_INTERVAL_MINUTES", 30)
+    rule_rows = store.rows[store.rules_sheet]
+    headers = store.rule_headers
+    priority_rows = store.rows["priority_items"]
     rules = parse_rules(
         rule_rows, headers,
         env_int("YAHOO_AUCTION_DEFAULT_MINIMUM_PROFIT", 5000),
         float(os.getenv("YAHOO_AUCTION_DEFAULT_SALE_FEE_RATE", "0.10")),
     )
-    state = database.load_scheduler_state(connection)
+    state = store.scheduler_state()
+    model_stats = store.model_stats()
     selected = select_rules(rules, state, max_rules)
     projection = cycle_projection(len(rules), max_rules, cron_minutes)
     print(
@@ -197,19 +222,24 @@ def run(connection):
                 status_class, _ = classify_item_condition(item.title, item.description, item.store_condition)
                 p_limit = priority_limit(rule, priority_rows, status_class)
                 result = evaluate(rule, item.price, shipping, status_class, p_limit)
+                if result["decision"] == "CANDIDATE":
+                    data_decision, data_reason = model_data_decision(rule, model_stats, now)
+                    if data_decision:
+                        result = {**result, "decision": data_decision, "reason_code": data_reason}
                 records.append(make_record(item, rule, result, remaining, end_at, p_limit, now))
         interval = env_int("YAHOO_AUCTION_REQUEST_INTERVAL_MS", 1000) / 1000
         if interval > 0:
             time.sleep(interval)
     chosen = choose_records(records, max_upserts, sample_limit)
-    database.upsert_shadow_records(connection, chosen)
+    now = datetime.now(timezone.utc)
+    store.upsert_results(chosen, now)
     active_ids = {r.rule_id for r in rules}
     updated_state = {k: v for k, v in state.items() if k in active_ids}
-    database.save_scheduler_state(connection, mark_processed(updated_state, attempted))
-    deleted = database.cleanup(connection, env_int("YAHOO_AUCTION_CLEANUP_BATCH_SIZE", 500))
+    store.apply_state(mark_processed(updated_state, attempted), now)
+    deleted = store.cleanup(now, min(500, env_int("YAHOO_AUCTION_CLEANUP_BATCH_SIZE", 500)))
     finished = datetime.now(timezone.utc)
     stats = {
-        "run_id": uuid.uuid4(), "status": "BUDGET_EXCEEDED" if stop else "COMPLETED",
+        "run_id": store.lease.run_id, "status": "BUDGET_EXCEEDED" if stop else "COMPLETED",
         "started_at": started, "finished_at": finished,
         "duration_ms": int((finished - started).total_seconds() * 1000),
         "enabled_rule_count": len(rules), "searched_rule_count": len(attempted),
@@ -217,11 +247,15 @@ def run(connection):
         "candidate_count": sum(r["decision"] == "CANDIDATE" for r in chosen),
         "shadow_upsert_count": len(chosen), "detail_fetch_count": details,
         "http_error_count": errors, "projected_cycle_minutes": projection["minutes"],
-        "error_code": None, "expires_at": finished + timedelta(days=env_int("YAHOO_AUCTION_RUN_STATS_RETENTION_DAYS", 90)),
+        "sheets_read_calls": store.read_calls, "sheets_write_calls": store.write_calls + 1,
     }
-    database.save_run_stats(connection, stats)
-    connection.commit()
-    print(f"YAHOO_SHADOW_END: attempted_rules={len(attempted)} fetched={fetched} ending={ending} saved={len(chosen)} cleanup={deleted}")
+    store.aggregate_run_stats(stats)
+    store.release_and_flush()
+    print(
+        f"YAHOO_SHADOW_END: attempted_rules={len(attempted)} fetched={fetched} ending={ending} "
+        f"saved={len(chosen)} cleanup={deleted} sheets_reads={store.read_calls} "
+        f"sheets_writes={store.write_calls} notifications=0"
+    )
 
 
 start_clock = 0.0
@@ -238,20 +272,22 @@ def main():
     if env_bool("YAHOO_AUCTION_NOTIFY_ENABLED", False):
         print("YAHOO_SHADOW_SAFE_STOP: notify_enabled_must_be_false external_access=0")
         return
-    database_url = os.getenv("DATABASE_URL")
-    if not database_url:
-        raise RuntimeError("DATABASE_URL is required")
     start_clock = time.monotonic()
-    with database.connect(database_url) as connection:
-        with database.advisory_lock(connection) as acquired:
-            if not acquired:
-                print("YAHOO_SHADOW_SKIPPED_LOCKED: sheets_access=0 yahoo_access=0")
-                return
-            # Heavy/external-client modules are intentionally loaded only after all
-            # safety gates and the non-blocking DB lock have passed.
-            sheets = importlib.import_module("sheets")
-            yahoo_client = importlib.import_module("yahoo_client")
-            run(connection)
+    # Heavy/external-client modules are intentionally loaded only after all safety gates.
+    sheets = importlib.import_module("sheets")
+    yahoo_client = importlib.import_module("yahoo_client")
+    book = sheets.open_book(os.getenv("GOOGLE_CREDENTIALS"), os.getenv("SPREADSHEET_ID"))
+    store = ShadowSheetsStore(book, lease_seconds=env_int("YAHOO_AUCTION_LEASE_SECONDS", 300))
+    try:
+        store.ensure_sheets()
+        store.load_all(os.getenv("YAHOO_AUCTION_RULES_SHEET", "yahoo_auction_rules"))
+        lease = store.acquire_lease(owner_id=os.getenv("RENDER_INSTANCE_ID") or None)
+        if not lease:
+            print("YAHOO_SHADOW_SKIPPED_LOCKED: yahoo_access=0")
+            return
+        run(store)
+    finally:
+        store.release_best_effort()
 
 
 if __name__ == "__main__":

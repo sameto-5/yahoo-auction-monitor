@@ -75,7 +75,7 @@ def parse_rules(rows, headers, default_minimum_profit=5000, default_sale_fee_rat
         raise ValueError("yahoo_auction_rules missing headers: " + ", ".join(missing))
     rules, ids, group_shipping = [], set(), {}
     for row in rows:
-        if not enabled(row.get("enabled")):
+        if not enabled(row.get("enabled")) or enabled(row.get("deleted")):
             continue
         rid = str(row.get("rule_id") or "").strip()
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", rid):
