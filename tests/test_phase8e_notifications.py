@@ -54,7 +54,31 @@ class Phase8ENotificationTests(unittest.TestCase):
             candidate(minutes_remaining=31),
         ]
         self.assertTrue(all(shadow_monitor.notification_stage(row, self.stat) is None for row in cases))
-        self.assertIsNone(shadow_monitor.notification_stage(candidate(), {"sample_count": 2, "confidence": .9}))
+        self.assertIsNone(shadow_monitor.notification_stage(candidate(), {"sample_count": 1, "confidence": .9}))
+
+    def test_relaxed_candidate_boundaries(self):
+        base = candidate(minutes_remaining=20)
+        self.assertIsNone(shadow_monitor.notification_stage(base, {"sample_count": 1, "confidence": .9}))
+        self.assertEqual(shadow_monitor.notification_stage(base, {"sample_count": 2, "confidence": .9}), "CANDIDATE")
+        self.assertIsNone(shadow_monitor.notification_stage(base, {"sample_count": 5, "confidence": .29}))
+        self.assertEqual(shadow_monitor.notification_stage(base, {"sample_count": 5, "confidence": .30}), "CANDIDATE")
+        self.assertIsNone(shadow_monitor.notification_stage(candidate(minutes_remaining=20, estimated_margin_rate=.079), self.stat))
+        self.assertEqual(shadow_monitor.notification_stage(candidate(minutes_remaining=20, estimated_margin_rate=.08), self.stat), "CANDIDATE")
+        self.assertIsNone(shadow_monitor.notification_stage(candidate(minutes_remaining=20, estimated_profit=4999), self.stat))
+        self.assertEqual(shadow_monitor.notification_stage(candidate(minutes_remaining=20, estimated_profit=5000), self.stat), "CANDIDATE")
+
+    def test_rule_minimum_profit_uses_higher_value(self):
+        self.assertIsNone(shadow_monitor.notification_stage(
+            candidate(minutes_remaining=20, minimum_profit=7000, estimated_profit=6999), self.stat
+        ))
+        self.assertEqual(shadow_monitor.notification_stage(
+            candidate(minutes_remaining=20, minimum_profit=7000, estimated_profit=7000), self.stat
+        ), "CANDIDATE")
+
+    def test_strong_keeps_strict_thresholds(self):
+        self.assertEqual(shadow_monitor.notification_stage(candidate(minutes_remaining=10), self.stat), "STRONG_CANDIDATE")
+        self.assertEqual(shadow_monitor.notification_stage(candidate(minutes_remaining=10), {"sample_count": 4, "confidence": .9}), "CANDIDATE")
+        self.assertEqual(shadow_monitor.notification_stage(candidate(minutes_remaining=10, estimated_margin_rate=.09), self.stat), "CANDIDATE")
 
     def test_same_stage_is_sent_only_once(self):
         store = FakeStore()
@@ -119,6 +143,16 @@ class Phase8ENotificationTests(unittest.TestCase):
         self.assertIn("現在価格：10,000円", message)
         self.assertIn("想定利益率：36.0%", message)
         self.assertIn("confidence：0.90", message)
+
+    def test_relaxed_candidate_message_contains_warning(self):
+        message = phase8e.format_notification(
+            candidate(minutes_remaining=20), "CANDIDATE",
+            {"sample_count": 2, "confidence": .3}, datetime.now(timezone.utc),
+            relaxed_candidate=True,
+        )
+        self.assertIn("⚠ 参考候補", message)
+        self.assertIn("相場件数：2件", message)
+        self.assertIn("confidence：0.30", message)
 
 
 if __name__ == "__main__":

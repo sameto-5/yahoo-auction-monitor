@@ -141,6 +141,9 @@ Shadow保存し、`CANDIDATE`にはしません。初期値は5サンプル、�
 
 PHASE 8EはPHASE 8DのSheets保存を継続しながら、終了30分以内の`CANDIDATE`と
 終了15分以内の`STRONG_CANDIDATE`だけをYahoo専用Discord Webhookへ送信します。
+`CANDIDATE`の既定閾値は相場2件、confidence 0.30、利益率8%、最低利益5,000円です。
+ルールの`minimum_profit`が5,000円を超える場合は高い方を採用します。旧来の厳しい
+閾値を満たさない参考候補には、実売履歴確認を促す警告を通知本文へ表示します。
 `YAHOO_DISCORD_WEBHOOK_URL`が空の場合は外部アクセス前に安全停止し、Off-Mall用Webhookへ
 フォールバックしません。`YAHOO_AUCTION_NOTIFY_ENABLED=false`へ戻せば検索・Shadow保存を
 維持したまま通知だけを停止できます。

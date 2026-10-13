@@ -40,7 +40,7 @@ def send_discord(webhook_url, message, timeout=20):
     )
 
 
-def format_notification(record, stage, model_stat, now):
+def format_notification(record, stage, model_stat, now, relaxed_candidate=False):
     def yen(value):
         return f"{int(float(value)):,}円"
 
@@ -53,9 +53,13 @@ def format_notification(record, stage, model_stat, now):
     confidence = float(model_stat.get("confidence") or 0)
     sample_count = int(float(model_stat.get("sample_count") or 0))
     margin = float(record.get("estimated_margin_rate") or 0) * 100
-    return "\n".join([
+    lines = [
         "【Yahoo仕入れ候補】",
         f"判定：{stage}",
+    ]
+    if relaxed_candidate:
+        lines.append("⚠ 参考候補：相場データまたは信頼度が低いため、入札前に実売履歴を確認してください。")
+    lines.extend([
         f"商品名：{text(record.get('title'))}",
         f"型番：{text(record.get('normalized_model'))}",
         f"状態：{text(record.get('condition_class'))}",
@@ -74,3 +78,4 @@ def format_notification(record, stage, model_stat, now):
         f"URL：{text(record.get('item_url'))}",
         f"判定理由：{text(record.get('reason_code'))}",
     ])
+    return "\n".join(lines)

@@ -3,6 +3,7 @@ import time
 import importlib
 import hashlib
 import json
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 
 from condition import classify_item_condition, prices_for_condition
@@ -106,13 +107,13 @@ def model_data_decision(rule, model_stats, now):
         sample_count = int(float(row.get("sample_count") or 0))
     except (TypeError, ValueError):
         sample_count = 0
-    if sample_count < env_int("YAHOO_AUCTION_MODEL_MIN_SAMPLES", 5):
+    if sample_count < env_int("YAHOO_CANDIDATE_MIN_SAMPLE_COUNT", 2):
         return "DATA_INSUFFICIENT", "MODEL_SAMPLE_TOO_SMALL"
     try:
         confidence = float(row.get("confidence") or 0)
     except (TypeError, ValueError):
         confidence = 0
-    if confidence < float(os.getenv("YAHOO_AUCTION_MODEL_MIN_CONFIDENCE", "0.5")):
+    if confidence < float(os.getenv("YAHOO_CANDIDATE_MIN_CONFIDENCE", "0.30")):
         return "DATA_INSUFFICIENT", "MODEL_CONFIDENCE_LOW"
     updated = str(row.get("updated_at") or "")
     try:
@@ -124,43 +125,85 @@ def model_data_decision(rule, model_stats, now):
     return None, None
 
 
-def notification_stage(record, model_stat):
+def notification_thresholds():
+    """Load configurable thresholds once, outside the pure decision core."""
+    return {
+        "notify_window": env_int("YAHOO_AUCTION_NOTIFY_WINDOW_MINUTES", 30),
+        "candidate_samples": env_int("YAHOO_CANDIDATE_MIN_SAMPLE_COUNT", 2),
+        "candidate_confidence": float(os.getenv("YAHOO_CANDIDATE_MIN_CONFIDENCE", "0.30")),
+        "candidate_margin": float(os.getenv("YAHOO_CANDIDATE_MIN_MARGIN_RATE", "0.08")),
+        "candidate_profit": env_int("YAHOO_CANDIDATE_MIN_PROFIT_YEN", 5000),
+        "strong_window": env_int("YAHOO_AUCTION_STRONG_WINDOW_MINUTES", 15),
+        "strong_samples": env_int("YAHOO_AUCTION_MODEL_MIN_SAMPLES", 5),
+        "strong_confidence": float(os.getenv("YAHOO_AUCTION_MODEL_MIN_CONFIDENCE", "0.5")),
+        "strong_margin": float(os.getenv("YAHOO_AUCTION_MINIMUM_MARGIN_RATE", "0.10")),
+        "strong_headroom": env_int("YAHOO_AUCTION_STRONG_MIN_HEADROOM_YEN", 3000),
+        "strong_high_confidence": float(os.getenv("YAHOO_AUCTION_STRONG_MIN_CONFIDENCE", "0.8")),
+    }
+
+
+def evaluate_notification(record, model_stat, thresholds):
+    """Pure PHASE 8E eligibility decision with an auditable exclusion reason."""
     if record.get("decision") != "CANDIDATE":
-        return None
+        return None, f"DECISION_{record.get('decision') or 'MISSING'}", False
     remaining = record.get("minutes_remaining")
-    if remaining is None or remaining < 0 or remaining > env_int("YAHOO_AUCTION_NOTIFY_WINDOW_MINUTES", 30):
-        return None
+    if remaining is None or remaining < 0 or remaining > thresholds["notify_window"]:
+        return None, "OUTSIDE_NOTIFY_WINDOW", False
     required = (
         "normalized_model", "buy_shipping", "expected_sale_price", "effective_purchase_limit",
         "estimated_profit", "estimated_margin_rate", "headroom_yen", "condition_class",
     )
     if any(record.get(name) in (None, "") for name in required):
-        return None
+        return None, "REQUIRED_FIELD_MISSING", False
     if record["condition_class"] in {"junk", "unknown"}:
-        return None
+        return None, "UNSAFE_CONDITION", False
     if record["estimated_total_cost"] > record["effective_purchase_limit"]:
-        return None
-    if record["estimated_profit"] < record["minimum_profit"]:
-        return None
-    if record["estimated_margin_rate"] < float(os.getenv("YAHOO_AUCTION_MINIMUM_MARGIN_RATE", "0.10")):
-        return None
+        return None, "OVER_PURCHASE_LIMIT", False
+    minimum_profit = max(
+        thresholds["candidate_profit"],
+        int(float(record.get("minimum_profit") or 0)),
+    )
+    if record["estimated_profit"] < minimum_profit:
+        return None, "BELOW_MINIMUM_PROFIT", False
+    if record["estimated_margin_rate"] < thresholds["candidate_margin"]:
+        return None, "BELOW_MINIMUM_MARGIN", False
     try:
         sample_count = int(float(model_stat.get("sample_count") or 0))
         confidence = float(model_stat.get("confidence") or 0)
     except (TypeError, ValueError):
-        return None
-    if sample_count < env_int("YAHOO_AUCTION_MODEL_MIN_SAMPLES", 5):
-        return None
-    if confidence < float(os.getenv("YAHOO_AUCTION_MODEL_MIN_CONFIDENCE", "0.5")):
-        return None
+        return None, "MODEL_STATS_INVALID", False
+    if sample_count < thresholds["candidate_samples"]:
+        return None, "MODEL_SAMPLE_TOO_SMALL", False
+    if confidence < thresholds["candidate_confidence"]:
+        return None, "MODEL_CONFIDENCE_LOW", False
+    strict_samples = thresholds["strong_samples"]
+    strict_confidence = thresholds["strong_confidence"]
+    strict_margin = thresholds["strong_margin"]
     strong = (
-        remaining <= env_int("YAHOO_AUCTION_STRONG_WINDOW_MINUTES", 15)
-        and record["headroom_yen"] >= env_int("YAHOO_AUCTION_STRONG_MIN_HEADROOM_YEN", 3000)
-        and confidence >= float(os.getenv("YAHOO_AUCTION_STRONG_MIN_CONFIDENCE", "0.8"))
+        remaining <= thresholds["strong_window"]
+        and sample_count >= strict_samples
+        and confidence >= strict_confidence
+        and record["estimated_margin_rate"] >= strict_margin
+        and record["headroom_yen"] >= thresholds["strong_headroom"]
+        and confidence >= thresholds["strong_high_confidence"]
         and record.get("buy_shipping_source") == "ACTUAL"
         and record.get("condition_class") == "working"
     )
-    return "STRONG_CANDIDATE" if strong else "CANDIDATE"
+    stage = "STRONG_CANDIDATE" if strong else "CANDIDATE"
+    relaxed = stage == "CANDIDATE" and (
+        sample_count < strict_samples
+        or confidence < strict_confidence
+        or record["estimated_margin_rate"] < strict_margin
+    )
+    return stage, "ELIGIBLE", relaxed
+
+
+def notification_decision(record, model_stat):
+    return evaluate_notification(record, model_stat, notification_thresholds())
+
+
+def notification_stage(record, model_stat):
+    return notification_decision(record, model_stat)[0]
 
 
 def _retry_time(now, attempt_count, retry_after=None):
@@ -209,13 +252,13 @@ def deliver_notifications(store, records, model_stats, now):
         if sent + failed >= limit:
             break
         stat = model_stats.get(normalize(record.get("normalized_model"))) or {}
-        stage = notification_stage(record, stat)
+        stage, _, relaxed = notification_decision(record, stat)
         if not stage:
             continue
         key = (str(record["auction_id"]), str(record["rule_id"]), stage)
         if key in sent_keys:
             continue
-        message = notifier.format_notification(record, stage, stat, now)
+        message = notifier.format_notification(record, stage, stat, now, relaxed)
         result = notifier.send_discord(webhook, message, env_int("YAHOO_AUCTION_NOTIFY_TIMEOUT_SECONDS", 20))
         if result.success:
             store.mark_notification_sent(record, stage, now, hashlib.sha256(message.encode()).hexdigest())
@@ -347,6 +390,13 @@ def run(store):
     chosen = choose_records(records, max_upserts, sample_limit)
     now = datetime.now(timezone.utc)
     store.upsert_results(chosen, now)
+    shadow_reasons = Counter(str(row.get("reason_code") or "UNKNOWN") for row in chosen)
+    notify_reasons = Counter(
+        notification_decision(row, model_stats.get(normalize(row.get("normalized_model"))) or {})[1]
+        for row in chosen
+    )
+    print(f"YAHOO_SHADOW_REASON_COUNTS: {dict(sorted(shadow_reasons.items()))}")
+    print(f"YAHOO_PHASE8E_DECISION_COUNTS: {dict(sorted(notify_reasons.items()))}")
     notification_metrics = {"sent": 0, "failed": 0, "retries": 0, "rate_limits": 0}
     if env_bool("YAHOO_AUCTION_NOTIFY_ENABLED", False):
         notification_metrics = deliver_notifications(store, chosen, model_stats, now)
