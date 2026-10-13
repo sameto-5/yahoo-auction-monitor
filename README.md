@@ -144,6 +144,8 @@ PHASE 8EはPHASE 8DのSheets保存を継続しながら、終了30分以内の`C
 `CANDIDATE`の既定閾値は相場2件、confidence 0.30、利益率8%、最低利益5,000円です。
 ルールの`minimum_profit`が5,000円を超える場合は高い方を採用します。旧来の厳しい
 閾値を満たさない参考候補には、実売履歴確認を促す警告を通知本文へ表示します。
+`YAHOO_AUCTION_ALLOW_JUNK_UNKNOWN=true`ではジャンク・状態不明も一律除外せず、ほかの
+価格・送料・型番・利益条件を通過した場合に状態注意の警告付きで通知します。
 `YAHOO_DISCORD_WEBHOOK_URL`が空の場合は外部アクセス前に安全停止し、Off-Mall用Webhookへ
 フォールバックしません。`YAHOO_AUCTION_NOTIFY_ENABLED=false`へ戻せば検索・Shadow保存を
 維持したまま通知だけを停止できます。

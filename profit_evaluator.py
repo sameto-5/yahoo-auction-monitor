@@ -10,8 +10,11 @@ POLICY_ALLOWED = {
 }
 
 
-def evaluate(rule, current_price, actual_shipping, status_class, priority_limit=None):
-    if status_class not in POLICY_ALLOWED[rule.condition_policy]:
+def evaluate(rule, current_price, actual_shipping, status_class, priority_limit=None, allow_junk_unknown=False):
+    condition_allowed = status_class in POLICY_ALLOWED[rule.condition_policy]
+    if allow_junk_unknown and status_class in {"junk", "unknown"}:
+        condition_allowed = True
+    if not condition_allowed:
         return {"decision": "EXCLUDED", "reason_code": "CONDITION_POLICY_REJECTED"}
     if actual_shipping is not None:
         shipping, shipping_source = actual_shipping, "ACTUAL"

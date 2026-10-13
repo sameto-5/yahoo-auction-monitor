@@ -133,6 +133,7 @@ def notification_thresholds():
         "candidate_confidence": float(os.getenv("YAHOO_CANDIDATE_MIN_CONFIDENCE", "0.30")),
         "candidate_margin": float(os.getenv("YAHOO_CANDIDATE_MIN_MARGIN_RATE", "0.08")),
         "candidate_profit": env_int("YAHOO_CANDIDATE_MIN_PROFIT_YEN", 5000),
+        "allow_junk_unknown": env_bool("YAHOO_AUCTION_ALLOW_JUNK_UNKNOWN", True),
         "strong_window": env_int("YAHOO_AUCTION_STRONG_WINDOW_MINUTES", 15),
         "strong_samples": env_int("YAHOO_AUCTION_MODEL_MIN_SAMPLES", 5),
         "strong_confidence": float(os.getenv("YAHOO_AUCTION_MODEL_MIN_CONFIDENCE", "0.5")),
@@ -155,7 +156,7 @@ def evaluate_notification(record, model_stat, thresholds):
     )
     if any(record.get(name) in (None, "") for name in required):
         return None, "REQUIRED_FIELD_MISSING", False
-    if record["condition_class"] in {"junk", "unknown"}:
+    if record["condition_class"] in {"junk", "unknown"} and not thresholds["allow_junk_unknown"]:
         return None, "UNSAFE_CONDITION", False
     if record["estimated_total_cost"] > record["effective_purchase_limit"]:
         return None, "OVER_PURCHASE_LIMIT", False
@@ -378,7 +379,13 @@ def run(store):
                 ending += 1
                 status_class, _ = classify_item_condition(item.title, item.description, item.store_condition)
                 p_limit = priority_limit(rule, priority_rows, status_class)
-                result = {**evaluate(rule, item.price, shipping, status_class, p_limit), "condition_class": status_class}
+                result = {
+                    **evaluate(
+                        rule, item.price, shipping, status_class, p_limit,
+                        allow_junk_unknown=env_bool("YAHOO_AUCTION_ALLOW_JUNK_UNKNOWN", True),
+                    ),
+                    "condition_class": status_class,
+                }
                 if result["decision"] == "CANDIDATE":
                     data_decision, data_reason = model_data_decision(rule, model_stats, now)
                     if data_decision:

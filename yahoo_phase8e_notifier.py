@@ -59,6 +59,8 @@ def format_notification(record, stage, model_stat, now, relaxed_candidate=False)
     ]
     if relaxed_candidate:
         lines.append("⚠ 参考候補：相場データまたは信頼度が低いため、入札前に実売履歴を確認してください。")
+    if record.get("condition_class") in {"junk", "unknown"}:
+        lines.append("⚠ 状態注意：ジャンクまたは状態不明です。説明・写真を確認してから入札してください。")
     lines.extend([
         f"商品名：{text(record.get('title'))}",
         f"型番：{text(record.get('normalized_model'))}",

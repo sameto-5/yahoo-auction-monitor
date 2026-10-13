@@ -7,6 +7,7 @@ from unittest.mock import patch
 import _stubs  # noqa: F401
 import shadow_monitor
 import yahoo_phase8e_notifier as phase8e
+from profit_evaluator import evaluate
 from sheets_shadow_store import ShadowSheetsStore
 
 
@@ -49,12 +50,32 @@ class Phase8ENotificationTests(unittest.TestCase):
     def test_unsafe_records_never_notify(self):
         cases = [
             candidate(normalized_model=""), candidate(buy_shipping=None),
-            candidate(condition_class="junk"), candidate(estimated_total_cost=19000),
+            candidate(estimated_total_cost=19000),
             candidate(estimated_profit=4999), candidate(estimated_margin_rate=0.01),
             candidate(minutes_remaining=31),
         ]
         self.assertTrue(all(shadow_monitor.notification_stage(row, self.stat) is None for row in cases))
         self.assertIsNone(shadow_monitor.notification_stage(candidate(), {"sample_count": 1, "confidence": .9}))
+
+    def test_junk_and_unknown_can_notify_but_never_become_strong(self):
+        for condition_class in ("junk", "unknown"):
+            self.assertEqual(
+                shadow_monitor.notification_stage(candidate(condition_class=condition_class), self.stat),
+                "CANDIDATE",
+            )
+
+    def test_shadow_profit_evaluator_allows_junk_unknown_when_enabled(self):
+        rule = SimpleNamespace(
+            condition_policy="working_only", estimated_buy_shipping=1000,
+            group_default_buy_shipping=None, estimated_sale_shipping=1000,
+            expected_sale_price=25000, sale_fee_rate=.1, other_cost=0,
+            minimum_profit=5000, max_purchase_price=18000,
+        )
+        for condition_class in ("junk", "unknown"):
+            self.assertEqual(
+                evaluate(rule, 10000, None, condition_class, allow_junk_unknown=True)["decision"],
+                "CANDIDATE",
+            )
 
     def test_relaxed_candidate_boundaries(self):
         base = candidate(minutes_remaining=20)
@@ -153,6 +174,12 @@ class Phase8ENotificationTests(unittest.TestCase):
         self.assertIn("⚠ 参考候補", message)
         self.assertIn("相場件数：2件", message)
         self.assertIn("confidence：0.30", message)
+
+    def test_junk_message_contains_condition_warning(self):
+        message = phase8e.format_notification(
+            candidate(condition_class="junk"), "CANDIDATE", self.stat, datetime.now(timezone.utc)
+        )
+        self.assertIn("⚠ 状態注意", message)
 
 
 if __name__ == "__main__":
