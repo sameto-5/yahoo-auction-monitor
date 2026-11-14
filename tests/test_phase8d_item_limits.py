@@ -97,6 +97,14 @@ class ShadowItemLimitTests(unittest.TestCase):
         headers = rule_loader.RULE_HEADERS + ["deleted"]
         self.assertEqual(rule_loader.parse_rules([deleted], headers), [])
 
+    def test_enabled_partial_row_without_rule_id_is_ignored(self):
+        partial = row("A1")
+        partial["rule_id"] = ""
+        self.assertEqual(
+            rule_loader.parse_rules([partial], rule_loader.RULE_HEADERS),
+            [],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

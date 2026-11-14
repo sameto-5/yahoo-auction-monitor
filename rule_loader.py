@@ -78,6 +78,12 @@ def parse_rules(rows, headers, default_minimum_profit=5000, default_sale_fee_rat
         if not enabled(row.get("enabled")) or enabled(row.get("deleted")):
             continue
         rid = str(row.get("rule_id") or "").strip()
+        # A partially pasted row must not take the whole scheduled monitor down.
+        # Without a persistent rule_id it cannot be scheduled or deduplicated,
+        # so fail closed by ignoring it. Other malformed identified rules still
+        # raise below and remain visible as configuration errors.
+        if not rid:
+            continue
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", rid):
             raise ValueError(f"invalid rule_id: {rid!r}")
         if rid in ids:
