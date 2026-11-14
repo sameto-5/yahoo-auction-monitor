@@ -196,6 +196,48 @@ def parse_search_results(html):
             listing_type=listing["listing_type"], buy_now_price=listing["buy_now_price"],
             shipping_fee=listing["shipping_fee"], end_at=listing["end_at"],
         ))
+
+    # Yahoo's current search page may render listing cards client-side and
+    # expose the initial results only through `var pageData = {...}`.  Keep the
+    # anchor parser for compatibility, then fill missing items from this public
+    # page payload.  Detail fetch remains responsible for unknown shipping.
+    known = {item.item_id for item in results}
+    payload_match = re.search(
+        r"var\s+pageData\s*=\s*(\{.*?\})\s*;\s*</script>",
+        str(html or ""),
+        re.DOTALL,
+    )
+    if payload_match:
+        try:
+            payload = json.loads(payload_match.group(1))
+        except (TypeError, ValueError):
+            payload = {}
+        for raw in payload.get("items", []) if isinstance(payload, dict) else []:
+            item_id = str(raw.get("productID") or "").strip()
+            title = str(raw.get("productName") or "").strip()
+            if not item_id or item_id in known or not title:
+                continue
+            end_at = str(raw.get("endtime") or "").strip()
+            price = parse_price(str(raw.get("price") or ""))
+            if price is None:
+                try:
+                    price = int(str(raw.get("price") or "").replace(",", ""))
+                except (TypeError, ValueError):
+                    price = None
+            results.append(AuctionItem(
+                item_id=item_id,
+                title=title,
+                price=price,
+                url=f"{BASE_URL}/jp/auction/{item_id}",
+                seller="",
+                store_condition="",
+                description=title,
+                listing_type="auction",
+                buy_now_price=int(raw["winPrice"]) if str(raw.get("winPrice") or "").isdigit() and int(raw["winPrice"]) > 0 else None,
+                shipping_fee=None,
+                end_at=end_at,
+            ))
+            known.add(item_id)
     return results
 
 

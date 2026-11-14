@@ -34,6 +34,18 @@ class YahooClientTests(unittest.TestCase):
         self.assertEqual(parsed.title, "Nikon COOLPIX S8100 動作品")
         self.assertEqual(parsed.price, 12800)
 
+    def test_parser_reads_current_client_side_page_data(self):
+        html = '''<script>var pageData = {"navigation":{},"items":[{
+          "productID":"n1251939408","price":"1694","winPrice":"0",
+          "endtime":"2026-11-15 09:32:53",
+          "productName":"Nikon COOLPIX P900 動作品"
+        }]};</script>'''
+        parsed = yahoo_client.parse_search_results(html)[0]
+        self.assertEqual(parsed.item_id, "n1251939408")
+        self.assertEqual(parsed.title, "Nikon COOLPIX P900 動作品")
+        self.assertEqual(parsed.price, 1694)
+        self.assertEqual(parsed.end_at, "2026-11-15 09:32:53")
+
     def test_search_url_replaces_slash_without_changing_other_terms(self):
         url = yahoo_client.build_search_url("1/20 Lotus 79 OLYMPUS 1978")
         self.assertNotIn("%2F", url.upper())
