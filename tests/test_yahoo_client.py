@@ -21,7 +21,18 @@ class YahooClientTests(unittest.TestCase):
     def test_search_url(self):
         url = yahoo_client.build_search_url("HXR-NX70J")
         self.assertIn("HXR-NX70J", url)
-        self.assertIn("s1=new", url)
+        self.assertIn("s1=end", url)
+        self.assertIn("o1=a", url)
+
+    def test_parser_prefers_product_title_over_badge_anchor(self):
+        html = '''<li class="Product">
+          <a href="/jp/auction/x1">New!!</a>
+          <a href="/jp/auction/x1">Nikon COOLPIX S8100 動作品</a>
+          <span>現在 12,800円</span>
+        </li>'''
+        parsed = yahoo_client.parse_search_results(html)[0]
+        self.assertEqual(parsed.title, "Nikon COOLPIX S8100 動作品")
+        self.assertEqual(parsed.price, 12800)
 
     def test_search_url_replaces_slash_without_changing_other_terms(self):
         url = yahoo_client.build_search_url("1/20 Lotus 79 OLYMPUS 1978")

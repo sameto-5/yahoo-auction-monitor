@@ -134,8 +134,11 @@ batch writeで取得後に再読込確認します。処理終了時はcursor・
 batch writeで保存します。leaseだけでは完全なCASを実現できないため、Render Cronの
 単一実行制御と併用し、期限切れleaseだけを取得します。
 
-相場統計が未登録、サンプル不足、低信頼度、または古い場合は`DATA_INSUFFICIENT`として
-Shadow保存し、`CANDIDATE`にはしません。初期値は5サンプル、信頼度0.5、30日以内です。
+相場統計が未登録でも、ルールに`expected_sale_price`と`max_purchase_price`が明示されている
+場合は、`YAHOO_CANDIDATE_ALLOW_RULE_PRICE_FALLBACK=true`により参考`CANDIDATE`として評価
+できます。この経路は`STRONG_CANDIDATE`にはせず、通知に実売履歴確認の警告を表示します。
+明示価格がない場合や、相場統計が存在するもののサンプル不足・低信頼度・期限切れの場合は
+従来どおり`DATA_INSUFFICIENT`です。
 
 ## PHASE 8E Discord通知
 
@@ -146,6 +149,10 @@ PHASE 8EはPHASE 8DのSheets保存を継続しながら、終了30分以内の`C
 閾値を満たさない参考候補には、実売履歴確認を促す警告を通知本文へ表示します。
 `YAHOO_AUCTION_ALLOW_JUNK_UNKNOWN=true`ではジャンク・状態不明も一律除外せず、ほかの
 価格・送料・型番・利益条件を通過した場合に状態注意の警告付きで通知します。
+検索は終了時刻の早い順に取得し、1ルール当たりの取得上限が新着商品だけで消費されるのを
+防ぎます。`estimated_sale_shipping`が空欄の場合は、解決済み購入送料と
+`YAHOO_AUCTION_DEFAULT_SALE_SHIPPING`の高い方を販売送料の安全側見積りに使います。購入送料
+自体が不明な商品は引き続き通知しません。
 `YAHOO_DISCORD_WEBHOOK_URL`が空の場合は外部アクセス前に安全停止し、Off-Mall用Webhookへ
 フォールバックしません。`YAHOO_AUCTION_NOTIFY_ENABLED=false`へ戻せば検索・Shadow保存を
 維持したまま通知だけを停止できます。
@@ -165,4 +172,6 @@ YAHOO_AUCTION_MAX_ITEMS_PER_RULE=15
 YAHOO_AUCTION_MAX_ITEMS_PER_RUN=50
 YAHOO_AUCTION_LOOKAHEAD_MINUTES=180
 YAHOO_AUCTION_EXPECTED_CRON_INTERVAL_MINUTES=30
+YAHOO_AUCTION_DEFAULT_SALE_SHIPPING=1800
+YAHOO_CANDIDATE_ALLOW_RULE_PRICE_FALLBACK=true
 ```

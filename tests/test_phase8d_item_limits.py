@@ -79,7 +79,8 @@ class ShadowItemLimitTests(unittest.TestCase):
 
     def test_missing_model_stats_downgrades_candidate(self):
         rule = rule_loader.parse_rules([row("A1")], rule_loader.RULE_HEADERS)[0]
-        decision = shadow_monitor.model_data_decision(rule, {}, datetime.now(timezone.utc))
+        with patch.dict(os.environ, {"YAHOO_CANDIDATE_ALLOW_RULE_PRICE_FALLBACK": "false"}, clear=True):
+            decision = shadow_monitor.model_data_decision(rule, {}, datetime.now(timezone.utc))
         self.assertEqual(decision, ("DATA_INSUFFICIENT", "MODEL_STATS_MISSING"))
 
     def test_fresh_model_stats_are_accepted(self):

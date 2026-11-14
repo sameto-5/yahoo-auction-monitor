@@ -10,7 +10,8 @@ POLICY_ALLOWED = {
 }
 
 
-def evaluate(rule, current_price, actual_shipping, status_class, priority_limit=None, allow_junk_unknown=False):
+def evaluate(rule, current_price, actual_shipping, status_class, priority_limit=None,
+             allow_junk_unknown=False, default_sale_shipping=None):
     condition_allowed = status_class in POLICY_ALLOWED[rule.condition_policy]
     if allow_junk_unknown and status_class in {"junk", "unknown"}:
         condition_allowed = True
@@ -24,20 +25,27 @@ def evaluate(rule, current_price, actual_shipping, status_class, priority_limit=
         shipping, shipping_source = rule.group_default_buy_shipping, "GROUP_DEFAULT"
     else:
         return {"decision": "SHIPPING_UNKNOWN", "reason_code": "BUY_SHIPPING_NOT_AVAILABLE"}
-    if rule.estimated_sale_shipping is None:
+    sale_shipping = rule.estimated_sale_shipping
+    if sale_shipping is None and default_sale_shipping is not None:
+        # When the rule has no resale-shipping estimate, use the higher of the
+        # observed purchase shipping and a configurable safety floor.  We never
+        # turn an unknown purchase shipping into zero.
+        sale_shipping = max(shipping, default_sale_shipping)
+    if sale_shipping is None:
         return {"decision": "DECISION_UNAVAILABLE", "reason_code": "SALE_SHIPPING_NOT_AVAILABLE"}
     if current_price is None or rule.expected_sale_price is None:
         return {"decision": "DECISION_UNAVAILABLE", "reason_code": "EXPECTED_SALE_PRICE_MISSING"}
     sale_fee = math.ceil(rule.expected_sale_price * rule.sale_fee_rate)
-    calculated_limit = rule.expected_sale_price - sale_fee - rule.estimated_sale_shipping - rule.other_cost - rule.minimum_profit
+    calculated_limit = rule.expected_sale_price - sale_fee - sale_shipping - rule.other_cost - rule.minimum_profit
     limits = [v for v in (rule.max_purchase_price, priority_limit, calculated_limit) if v is not None and v >= 0]
     if not limits:
         return {"decision": "DECISION_UNAVAILABLE", "reason_code": "PURCHASE_LIMIT_NOT_AVAILABLE"}
     total = current_price + shipping
-    profit = rule.expected_sale_price - sale_fee - rule.estimated_sale_shipping - total - rule.other_cost
+    profit = rule.expected_sale_price - sale_fee - sale_shipping - total - rule.other_cost
     effective = min(limits)
     common = {
         "buy_shipping": shipping, "buy_shipping_source": shipping_source,
+        "estimated_sale_shipping": sale_shipping,
         "estimated_total_cost": total, "sale_fee": sale_fee, "estimated_profit": profit,
         "calculated_purchase_limit": calculated_limit, "effective_purchase_limit": effective,
     }

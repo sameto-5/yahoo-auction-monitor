@@ -175,6 +175,28 @@ class Phase8ENotificationTests(unittest.TestCase):
         self.assertIn("相場件数：2件", message)
         self.assertIn("confidence：0.30", message)
 
+    def test_explicit_rule_price_allows_candidate_without_model_stats(self):
+        row = candidate(minutes_remaining=20, explicit_purchase_limit=18000)
+        stage, reason, relaxed = shadow_monitor.notification_decision(row, {})
+        self.assertEqual(stage, "CANDIDATE")
+        self.assertEqual(reason, "ELIGIBLE_RULE_PRICE_FALLBACK")
+        self.assertTrue(relaxed)
+
+    def test_missing_model_stats_without_explicit_limit_still_blocks(self):
+        row = candidate(minutes_remaining=20, explicit_purchase_limit=None)
+        self.assertIsNone(shadow_monitor.notification_stage(row, {}))
+
+    def test_sale_shipping_uses_safe_floor_when_rule_value_is_missing(self):
+        rule = SimpleNamespace(
+            condition_policy="working_only", estimated_buy_shipping=1000,
+            group_default_buy_shipping=None, estimated_sale_shipping=None,
+            expected_sale_price=25000, sale_fee_rate=.1, other_cost=0,
+            minimum_profit=5000, max_purchase_price=18000,
+        )
+        result = evaluate(rule, 10000, None, "working", default_sale_shipping=1800)
+        self.assertEqual(result["decision"], "CANDIDATE")
+        self.assertEqual(result["estimated_sale_shipping"], 1800)
+
     def test_junk_message_contains_condition_warning(self):
         message = phase8e.format_notification(
             candidate(condition_class="junk"), "CANDIDATE", self.stat, datetime.now(timezone.utc)

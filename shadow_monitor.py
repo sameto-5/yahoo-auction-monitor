@@ -83,7 +83,7 @@ def make_record(item, rule, result, remaining, end_at, priority_purchase_limit, 
         "buy_shipping": result.get("buy_shipping"), "buy_shipping_source": result.get("buy_shipping_source"),
         "estimated_total_cost": result.get("estimated_total_cost"),
         "expected_sale_price": rule.expected_sale_price, "sale_fee": result.get("sale_fee"),
-        "estimated_sale_shipping": rule.estimated_sale_shipping, "other_cost": rule.other_cost,
+        "estimated_sale_shipping": result.get("estimated_sale_shipping", rule.estimated_sale_shipping), "other_cost": rule.other_cost,
         "minimum_profit": rule.minimum_profit, "estimated_profit": profit,
         "estimated_margin_rate": (profit / expected) if profit is not None and expected > 0 else None,
         "headroom_yen": (limit - total) if limit is not None and total is not None else None,
@@ -102,6 +102,10 @@ def make_record(item, rule, result, remaining, end_at, priority_purchase_limit, 
 def model_data_decision(rule, model_stats, now):
     row = model_stats.get(normalize(rule.model))
     if not row:
+        if (env_bool("YAHOO_CANDIDATE_ALLOW_RULE_PRICE_FALLBACK", True)
+                and rule.expected_sale_price is not None
+                and rule.max_purchase_price is not None):
+            return None, None
         return "DATA_INSUFFICIENT", "MODEL_STATS_MISSING"
     try:
         sample_count = int(float(row.get("sample_count") or 0))
@@ -168,6 +172,14 @@ def evaluate_notification(record, model_stat, thresholds):
         return None, "BELOW_MINIMUM_PROFIT", False
     if record["estimated_margin_rate"] < thresholds["candidate_margin"]:
         return None, "BELOW_MINIMUM_MARGIN", False
+    missing_model_stats = not model_stat
+    rule_price_fallback = (
+        env_bool("YAHOO_CANDIDATE_ALLOW_RULE_PRICE_FALLBACK", True)
+        and record.get("expected_sale_price") is not None
+        and record.get("explicit_purchase_limit") is not None
+    )
+    if missing_model_stats and rule_price_fallback:
+        return "CANDIDATE", "ELIGIBLE_RULE_PRICE_FALLBACK", True
     try:
         sample_count = int(float(model_stat.get("sample_count") or 0))
         confidence = float(model_stat.get("confidence") or 0)
@@ -383,6 +395,7 @@ def run(store):
                     **evaluate(
                         rule, item.price, shipping, status_class, p_limit,
                         allow_junk_unknown=env_bool("YAHOO_AUCTION_ALLOW_JUNK_UNKNOWN", True),
+                        default_sale_shipping=env_int("YAHOO_AUCTION_DEFAULT_SALE_SHIPPING", 1800),
                     ),
                     "condition_class": status_class,
                 }

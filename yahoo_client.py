@@ -39,8 +39,11 @@ def build_search_url(query, category=""):
     safe_query = " ".join(str(query or "").replace("/", " ").split())
     params = {
         "p": safe_query,
-        "s1": "new",
-        "o1": "d",
+        # Ending-soon order is essential: the caller intentionally inspects only
+        # a bounded number of results per rule.  "new" caused that budget to be
+        # spent on newly-listed auctions which were nowhere near the notify window.
+        "s1": "end",
+        "o1": "a",
     }
     if category_path != "0":
         params["auccat"] = category_path
@@ -140,17 +143,27 @@ def parse_listing_info(text, now=None):
 def parse_search_results(html):
     soup = BeautifulSoup(html, "html.parser")
     results = []
-    seen = set()
+    anchors_by_item = {}
     for anchor in soup.select("a[href*='/auction/'], a[href*='/item/']"):
         href = anchor.get("href", "")
         url = urljoin(BASE_URL, href)
         item_id = extract_item_id(url)
-        if not item_id or item_id in seen:
+        if not item_id:
             continue
-        title = " ".join(anchor.get_text(" ", strip=True).split())
-        if len(title) < 2:
-            title = str(anchor.get("title", "") or anchor.get("aria-label", "")).strip()
-        if len(title) < 2:
+        anchors_by_item.setdefault(item_id, []).append((anchor, url))
+
+    label_only = {"new!!", "new", "送料無料", "画像", "詳細", "入札"}
+    for item_id, candidates in anchors_by_item.items():
+        scored = []
+        for anchor, url in candidates:
+            title = " ".join(anchor.get_text(" ", strip=True).split())
+            attr_title = str(anchor.get("title", "") or anchor.get("aria-label", "")).strip()
+            if len(attr_title) > len(title):
+                title = attr_title
+            penalty = 1000 if title.casefold() in label_only else 0
+            scored.append((len(title) - penalty, title, anchor, url))
+        _, title, anchor, url = max(scored, key=lambda row: row[0])
+        if len(title) < 2 or title.casefold() in label_only:
             continue
         block = anchor.find_parent(["li", "article"]) or anchor
         surrounding = " ".join(block.get_text(" ", strip=True).split())
@@ -183,7 +196,6 @@ def parse_search_results(html):
             listing_type=listing["listing_type"], buy_now_price=listing["buy_now_price"],
             shipping_fee=listing["shipping_fee"], end_at=listing["end_at"],
         ))
-        seen.add(item_id)
     return results
 
 
