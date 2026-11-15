@@ -92,6 +92,11 @@ def is_enabled(value):
     return str(value or "").strip().lower() not in {"", "0", "false", "off", "no", "無効"}
 
 
+def is_platform_enabled(value):
+    """Blank legacy cells keep the pre-v67 behavior: monitor on both platforms."""
+    return str(value or "").strip().lower() not in {"0", "false", "off", "no", "無効"}
+
+
 def priority_bucket(value):
     text = str(value or "").strip().upper()
     if text == "A":
@@ -109,7 +114,8 @@ def rule_id(rule):
 def prepare_rules(rows):
     result = []
     for row in rows:
-        if is_enabled(row.get("deleted")) or not is_enabled(row.get("有効")):
+        if (is_enabled(row.get("deleted")) or not is_enabled(row.get("有効"))
+                or not is_platform_enabled(row.get("ヤフオク監視"))):
             continue
         if not row.get("型番") and not row.get("キーワード"):
             continue

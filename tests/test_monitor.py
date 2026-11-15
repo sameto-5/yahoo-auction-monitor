@@ -14,6 +14,16 @@ def make_rule(priority="A", model="HXR-NX70J", keyword="HXR-NX70J"):
 
 
 class MonitorTests(unittest.TestCase):
+    def test_prepare_rules_honors_yahoo_flag_and_keeps_legacy_blank(self):
+        legacy = make_rule(model="LEGACY", keyword="")
+        legacy["ヤフオク監視"] = ""
+        disabled = make_rule(model="YAHOO-OFF", keyword="")
+        disabled["ヤフオク監視"] = "0"
+        enabled = make_rule(model="YAHOO-ON", keyword="")
+        enabled["ヤフオク監視"] = "1"
+        rules = monitor.prepare_rules([legacy, disabled, enabled])
+        self.assertEqual([row["型番"] for row in rules], ["LEGACY", "YAHOO-ON"])
+
     def test_query_deduplication(self):
         rules = monitor.prepare_rules([make_rule(), make_rule(priority="B")])
         groups = monitor.build_query_groups(rules)
