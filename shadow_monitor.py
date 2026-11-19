@@ -396,6 +396,7 @@ def run(store):
                         rule, item.price, shipping, status_class, p_limit,
                         allow_junk_unknown=env_bool("YAHOO_AUCTION_ALLOW_JUNK_UNKNOWN", True),
                         default_sale_shipping=env_int("YAHOO_AUCTION_DEFAULT_SALE_SHIPPING", 1800),
+                        default_buy_shipping=env_int("YAHOO_AUCTION_UNKNOWN_BUY_SHIPPING_ESTIMATE", 3000),
                     ),
                     "condition_class": status_class,
                 }

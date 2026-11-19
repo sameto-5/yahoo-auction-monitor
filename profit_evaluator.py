@@ -11,7 +11,8 @@ POLICY_ALLOWED = {
 
 
 def evaluate(rule, current_price, actual_shipping, status_class, priority_limit=None,
-             allow_junk_unknown=False, default_sale_shipping=None):
+             allow_junk_unknown=False, default_sale_shipping=None,
+             default_buy_shipping=None):
     condition_allowed = status_class in POLICY_ALLOWED[rule.condition_policy]
     if allow_junk_unknown and status_class in {"junk", "unknown"}:
         condition_allowed = True
@@ -23,6 +24,10 @@ def evaluate(rule, current_price, actual_shipping, status_class, priority_limit=
         shipping, shipping_source = rule.estimated_buy_shipping, "RULE_ESTIMATE"
     elif rule.group_default_buy_shipping is not None:
         shipping, shipping_source = rule.group_default_buy_shipping, "GROUP_DEFAULT"
+    elif default_buy_shipping is not None:
+        # Unknown shipping must never become zero.  A configurable, conservative
+        # estimate lets it remain a clearly-labelled reference candidate.
+        shipping, shipping_source = default_buy_shipping, "SAFE_DEFAULT"
     else:
         return {"decision": "SHIPPING_UNKNOWN", "reason_code": "BUY_SHIPPING_NOT_AVAILABLE"}
     sale_shipping = rule.estimated_sale_shipping

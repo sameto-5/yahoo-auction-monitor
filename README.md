@@ -152,7 +152,8 @@ PHASE 8EはPHASE 8DのSheets保存を継続しながら、終了30分以内の`C
 検索は終了時刻の早い順に取得し、1ルール当たりの取得上限が新着商品だけで消費されるのを
 防ぎます。`estimated_sale_shipping`が空欄の場合は、解決済み購入送料と
 `YAHOO_AUCTION_DEFAULT_SALE_SHIPPING`の高い方を販売送料の安全側見積りに使います。購入送料
-自体が不明な商品は引き続き通知しません。
+自体を解決できない場合は、`YAHOO_AUCTION_UNKNOWN_BUY_SHIPPING_ESTIMATE`（既定3,000円）を
+安全側の仮送料として利益を再計算し、送料未確定の警告付き参考候補とします。
 `YAHOO_DISCORD_WEBHOOK_URL`が空の場合は外部アクセス前に安全停止し、Off-Mall用Webhookへ
 フォールバックしません。`YAHOO_AUCTION_NOTIFY_ENABLED=false`へ戻せば検索・Shadow保存を
 維持したまま通知だけを停止できます。
@@ -173,5 +174,6 @@ YAHOO_AUCTION_MAX_ITEMS_PER_RUN=50
 YAHOO_AUCTION_LOOKAHEAD_MINUTES=180
 YAHOO_AUCTION_EXPECTED_CRON_INTERVAL_MINUTES=30
 YAHOO_AUCTION_DEFAULT_SALE_SHIPPING=1800
+YAHOO_AUCTION_UNKNOWN_BUY_SHIPPING_ESTIMATE=3000
 YAHOO_CANDIDATE_ALLOW_RULE_PRICE_FALLBACK=true
 ```

@@ -197,6 +197,30 @@ class Phase8ENotificationTests(unittest.TestCase):
         self.assertEqual(result["decision"], "CANDIDATE")
         self.assertEqual(result["estimated_sale_shipping"], 1800)
 
+    def test_unknown_buy_shipping_uses_nonzero_safe_default(self):
+        rule = SimpleNamespace(
+            condition_policy="working_only", estimated_buy_shipping=None,
+            group_default_buy_shipping=None, estimated_sale_shipping=None,
+            expected_sale_price=30000, sale_fee_rate=.1, other_cost=0,
+            minimum_profit=5000, max_purchase_price=20000,
+        )
+        result = evaluate(
+            rule, 10000, None, "working",
+            default_sale_shipping=1800, default_buy_shipping=3000,
+        )
+        self.assertEqual(result["decision"], "CANDIDATE")
+        self.assertEqual(result["buy_shipping"], 3000)
+        self.assertEqual(result["buy_shipping_source"], "SAFE_DEFAULT")
+        self.assertEqual(result["estimated_total_cost"], 13000)
+
+    def test_safe_default_shipping_message_contains_warning(self):
+        message = phase8e.format_notification(
+            candidate(buy_shipping=3000, buy_shipping_source="SAFE_DEFAULT"),
+            "CANDIDATE", self.stat, datetime.now(timezone.utc),
+        )
+        self.assertIn("⚠ 送料未確定", message)
+        self.assertIn("購入送料：3,000円", message)
+
     def test_junk_message_contains_condition_warning(self):
         message = phase8e.format_notification(
             candidate(condition_class="junk"), "CANDIDATE", self.stat, datetime.now(timezone.utc)
