@@ -138,6 +138,7 @@ def notification_thresholds():
         "candidate_margin": float(os.getenv("YAHOO_CANDIDATE_MIN_MARGIN_RATE", "0.08")),
         "candidate_profit": env_int("YAHOO_CANDIDATE_MIN_PROFIT_YEN", 5000),
         "allow_junk_unknown": env_bool("YAHOO_AUCTION_ALLOW_JUNK_UNKNOWN", True),
+        "allow_unchecked": env_bool("YAHOO_AUCTION_ALLOW_UNCHECKED", True),
         "strong_window": env_int("YAHOO_AUCTION_STRONG_WINDOW_MINUTES", 15),
         "strong_samples": env_int("YAHOO_AUCTION_MODEL_MIN_SAMPLES", 5),
         "strong_confidence": float(os.getenv("YAHOO_AUCTION_MODEL_MIN_CONFIDENCE", "0.5")),
@@ -162,6 +163,8 @@ def evaluate_notification(record, model_stat, thresholds):
         return None, "REQUIRED_FIELD_MISSING", False
     if record["condition_class"] in {"junk", "unknown"} and not thresholds["allow_junk_unknown"]:
         return None, "UNSAFE_CONDITION", False
+    if record["condition_class"] == "unchecked" and not thresholds["allow_unchecked"]:
+        return None, "UNCHECKED_CONDITION", False
     if record["estimated_total_cost"] > record["effective_purchase_limit"]:
         return None, "OVER_PURCHASE_LIMIT", False
     minimum_profit = max(
@@ -395,6 +398,7 @@ def run(store):
                     **evaluate(
                         rule, item.price, shipping, status_class, p_limit,
                         allow_junk_unknown=env_bool("YAHOO_AUCTION_ALLOW_JUNK_UNKNOWN", True),
+                        allow_unchecked=env_bool("YAHOO_AUCTION_ALLOW_UNCHECKED", True),
                         default_sale_shipping=env_int("YAHOO_AUCTION_DEFAULT_SALE_SHIPPING", 1800),
                         default_buy_shipping=env_int("YAHOO_AUCTION_UNKNOWN_BUY_SHIPPING_ESTIMATE", 3000),
                     ),

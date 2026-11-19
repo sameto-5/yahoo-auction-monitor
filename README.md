@@ -149,6 +149,8 @@ PHASE 8EはPHASE 8DのSheets保存を継続しながら、終了30分以内の`C
 閾値を満たさない参考候補には、実売履歴確認を促す警告を通知本文へ表示します。
 `YAHOO_AUCTION_ALLOW_JUNK_UNKNOWN=true`ではジャンク・状態不明も一律除外せず、ほかの
 価格・送料・型番・利益条件を通過した場合に状態注意の警告付きで通知します。
+`YAHOO_AUCTION_ALLOW_UNCHECKED=true`では動作未確認・現状品・通電のみも一律除外せず、
+ほかの条件を通過した場合に動作注意の警告付きで通知します（STRONGには昇格しません）。
 検索は終了時刻の早い順に取得し、1ルール当たりの取得上限が新着商品だけで消費されるのを
 防ぎます。`estimated_sale_shipping`が空欄の場合は、解決済み購入送料と
 `YAHOO_AUCTION_DEFAULT_SALE_SHIPPING`の高い方を販売送料の安全側見積りに使います。購入送料

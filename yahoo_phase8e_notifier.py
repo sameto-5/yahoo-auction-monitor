@@ -63,6 +63,8 @@ def format_notification(record, stage, model_stat, now, relaxed_candidate=False)
         lines.append("⚠ 送料未確定：購入送料は安全側の仮送料で計算しています。入札前に必ず実送料を確認してください。")
     if record.get("condition_class") in {"junk", "unknown"}:
         lines.append("⚠ 状態注意：ジャンクまたは状態不明です。説明・写真を確認してから入札してください。")
+    if record.get("condition_class") == "unchecked":
+        lines.append("⚠ 動作注意：動作未確認・通電のみ等の商品です。説明・写真を確認してから入札してください。")
     lines.extend([
         f"商品名：{text(record.get('title'))}",
         f"型番：{text(record.get('normalized_model'))}",

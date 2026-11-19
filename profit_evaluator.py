@@ -11,10 +11,12 @@ POLICY_ALLOWED = {
 
 
 def evaluate(rule, current_price, actual_shipping, status_class, priority_limit=None,
-             allow_junk_unknown=False, default_sale_shipping=None,
+             allow_junk_unknown=False, allow_unchecked=False, default_sale_shipping=None,
              default_buy_shipping=None):
     condition_allowed = status_class in POLICY_ALLOWED[rule.condition_policy]
     if allow_junk_unknown and status_class in {"junk", "unknown"}:
+        condition_allowed = True
+    if allow_unchecked and status_class == "unchecked":
         condition_allowed = True
     if not condition_allowed:
         return {"decision": "EXCLUDED", "reason_code": "CONDITION_POLICY_REJECTED"}

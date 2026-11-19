@@ -77,6 +77,28 @@ class Phase8ENotificationTests(unittest.TestCase):
                 "CANDIDATE",
             )
 
+    def test_shadow_profit_evaluator_allows_unchecked_when_enabled(self):
+        rule = SimpleNamespace(
+            condition_policy="working_only", estimated_buy_shipping=1000,
+            group_default_buy_shipping=None, estimated_sale_shipping=1000,
+            expected_sale_price=25000, sale_fee_rate=.1, other_cost=0,
+            minimum_profit=5000, max_purchase_price=18000,
+        )
+        self.assertEqual(
+            evaluate(rule, 10000, None, "unchecked", allow_unchecked=True)["decision"],
+            "CANDIDATE",
+        )
+        self.assertEqual(
+            evaluate(rule, 10000, None, "unchecked", allow_unchecked=False)["reason_code"],
+            "CONDITION_POLICY_REJECTED",
+        )
+
+    def test_unchecked_can_notify_but_never_become_strong(self):
+        self.assertEqual(
+            shadow_monitor.notification_stage(candidate(condition_class="unchecked"), self.stat),
+            "CANDIDATE",
+        )
+
     def test_relaxed_candidate_boundaries(self):
         base = candidate(minutes_remaining=20)
         self.assertIsNone(shadow_monitor.notification_stage(base, {"sample_count": 1, "confidence": .9}))
