@@ -79,6 +79,7 @@ def make_record(item, rule, result, remaining, end_at, priority_purchase_limit, 
     return {
         "auction_id": str(item.item_id)[:100], "rule_id": rule.rule_id,
         "title": str(item.title)[:300], "item_url": str(item.url)[:500],
+        "registered_item_name": str(rule.query)[:200],
         "normalized_model": normalize(rule.model)[:150], "current_price": item.price,
         "buy_shipping": result.get("buy_shipping"), "buy_shipping_source": result.get("buy_shipping_source"),
         "estimated_total_cost": result.get("estimated_total_cost"),

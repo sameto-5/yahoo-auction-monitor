@@ -53,10 +53,31 @@ def format_notification(record, stage, model_stat, now, relaxed_candidate=False)
     confidence = float(model_stat.get("confidence") or 0)
     sample_count = int(float(model_stat.get("sample_count") or 0))
     margin = float(record.get("estimated_margin_rate") or 0) * 100
+    median_price = model_stat.get("median_price")
     lines = [
         "【Yahoo仕入れ候補】",
         f"判定：{stage}",
+        f"商品名：{text(record.get('title'))}",
+        f"優先登録商品名：{text(record.get('registered_item_name'), text(record.get('normalized_model')))}",
+        f"型番：{text(record.get('normalized_model'))}",
+        "",
+        f"現在価格：{yen(record.get('current_price'))}",
+        f"購入送料：{yen(record.get('buy_shipping'))}",
+        f"総仕入額：{yen(record.get('estimated_total_cost'))}",
+        f"想定販売価格：{yen(record.get('expected_sale_price'))}",
     ]
+    if median_price not in (None, ""):
+        lines.append(f"相場中央値：{yen(median_price)}")
+    lines.extend([
+        f"最大入札価格：{yen(record.get('effective_purchase_limit'))}",
+        f"上限までの余裕：{yen(record.get('headroom_yen'))}",
+        f"想定利益：{yen(record.get('estimated_profit'))}",
+        f"想定利益率：{margin:.1f}%",
+        f"相場件数：{sample_count}件",
+        f"confidence：{confidence:.2f}",
+        f"残り時間：{int(float(record.get('minutes_remaining') or 0))}分",
+        "",
+    ])
     if relaxed_candidate:
         lines.append("⚠ 参考候補：相場データまたは信頼度が低いため、入札前に実売履歴を確認してください。")
     if record.get("buy_shipping_source") == "SAFE_DEFAULT":
@@ -66,20 +87,8 @@ def format_notification(record, stage, model_stat, now, relaxed_candidate=False)
     if record.get("condition_class") == "unchecked":
         lines.append("⚠ 動作注意：動作未確認・通電のみ等の商品です。説明・写真を確認してから入札してください。")
     lines.extend([
-        f"商品名：{text(record.get('title'))}",
-        f"型番：{text(record.get('normalized_model'))}",
+        "",
         f"状態：{text(record.get('condition_class'))}",
-        f"現在価格：{yen(record.get('current_price'))}",
-        f"購入送料：{yen(record.get('buy_shipping'))}",
-        f"総仕入額：{yen(record.get('estimated_total_cost'))}",
-        f"想定販売価格：{yen(record.get('expected_sale_price'))}",
-        f"最大入札価格：{yen(record.get('effective_purchase_limit'))}",
-        f"上限までの余裕：{yen(record.get('headroom_yen'))}",
-        f"想定利益：{yen(record.get('estimated_profit'))}",
-        f"想定利益率：{margin:.1f}%",
-        f"相場件数：{sample_count}件",
-        f"confidence：{confidence:.2f}",
-        f"残り時間：{int(float(record.get('minutes_remaining') or 0))}分",
         f"終了日時：{text(end_at)}",
         f"URL：{text(record.get('item_url'))}",
         f"判定理由：{text(record.get('reason_code'))}",

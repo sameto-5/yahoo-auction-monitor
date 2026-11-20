@@ -15,6 +15,7 @@ def candidate(**overrides):
     row = {
         "auction_id": "a1", "rule_id": "r1", "decision": "CANDIDATE",
         "title": "Camera X100", "item_url": "https://example.test/a1",
+        "registered_item_name": "SONY Camera X100",
         "normalized_model": "x100", "current_price": 10000, "buy_shipping": 1000,
         "buy_shipping_source": "ACTUAL", "estimated_total_cost": 11000,
         "expected_sale_price": 25000, "effective_purchase_limit": 18000,
@@ -186,6 +187,15 @@ class Phase8ENotificationTests(unittest.TestCase):
         self.assertIn("現在価格：10,000円", message)
         self.assertIn("想定利益率：36.0%", message)
         self.assertIn("confidence：0.90", message)
+        self.assertIn("優先登録商品名：SONY Camera X100", message)
+        self.assertLess(message.index("商品名："), message.index("現在価格："))
+        self.assertLess(message.index("現在価格："), message.index("状態："))
+
+    def test_market_median_is_shown_near_top(self):
+        stat = {"sample_count": "20", "confidence": "0.9", "median_price": "24000"}
+        message = phase8e.format_notification(candidate(), "STRONG_CANDIDATE", stat, datetime.now(timezone.utc))
+        self.assertIn("相場中央値：24,000円", message)
+        self.assertLess(message.index("相場中央値："), message.index("状態："))
 
     def test_relaxed_candidate_message_contains_warning(self):
         message = phase8e.format_notification(
